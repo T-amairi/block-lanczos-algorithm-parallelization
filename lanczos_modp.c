@@ -211,7 +211,17 @@ void process_command_line_options(int argc, char ** argv)
 /* Compute x mod n */
 u32 fast_mod(u64 x, u64 n)
 {
-	return x >= n ? x % n : x;
+	if(x < n)
+	{
+		return x;
+	}
+
+	else if(x > n)
+	{
+		return x % n;
+	}
+
+	return 0;
 }
 
 /****************** sparse matrix operations ******************/
@@ -499,15 +509,38 @@ int semi_inverse(u32 const * M_, u32 * winv, u32 * d)
 /* Computes vtAv <-- transpose(v) * Av, vtAAv <-- transpose(Av) * Av */
 void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 const * v)
 {
-	for (int i = 0; i < n * n; i++)
-		vtAv[i] = 0;
-	for (int i = 0; i < N; i += n)
-		matmul_CpAtB(vtAv, &v[i*n], &Av[i*n]);
-	
-	for (int i = 0; i < n * n; i++)
-		vtAAv[i] = 0;
-	for (int i = 0; i < N; i += n)
-		matmul_CpAtB(vtAAv, &Av[i*n], &Av[i*n]);
+	long size = n * n;
+	u32 cache1[size];
+	u32 cache2[size];
+
+	#pragma omp parallel
+	{
+		#pragma omp for
+		for (int i = 0; i < size; i++)
+		{
+			cache1[i] = 0;
+			cache2[i] = 0;
+		}
+		
+		#pragma omp for reduction(+:cache1[0:size])
+		for (int i = 0; i < N; i += n)
+		{
+			matmul_CpAtB(cache1, &v[i*n], &Av[i*n]);
+		}
+
+		#pragma omp for reduction(+:cache2[0:size])
+		for (int i = 0; i < N; i += n)
+		{
+			matmul_CpAtB(cache2, &Av[i*n], &Av[i*n]);
+		}
+
+		#pragma omp for
+		for(long i = 0; i < size; i++)
+		{
+			vtAv[i] = cache1[i] % prime;
+			vtAAv[i] = cache2[i] % prime;
+		}	
+	}
 }
 
 /* Compute the next values of v (in tmp) and p */
@@ -518,39 +551,74 @@ void orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const
 	u32 spliced[n * n];
 
 	for (int i = 0; i < n; i++)
+	{
 		for (int j = 0; j < n; j++)
 		{
 			spliced[i*n + j] = d[j] ? vtAAv[i * n + j] : vtAv[i * n + j];
 			c[i * n + j] = 0;
 		}
-
+	}
+		
 	matmul_CpAB(c, winv, spliced);
+
 	for (int i = 0; i < n; i++)
+	{
 		for (int j = 0; j < n; j++)
+		{
 			c[i * n + j] = prime - c[i * n + j];
+		}
+	}
 
 	u32 vtAvd[n * n];
+
 	for (int i = 0; i < n; i++)
+	{
 		for (int j = 0; j < n; j++)
+		{
 			vtAvd[i*n + j] = d[j] ? prime - vtAv[i * n + j] : 0;
+		}
+	}
 
-	/* compute the next value of v ; store it in tmp */        
-	for (long i = 0; i < N; i++)
-		for (long j = 0; j < n; j++)
-			tmp[i*n + j] = d[j] ? Av[i*n + j] : v[i * n + j];
+	#pragma omp parallel
+	{
+		/* compute the next value of v ; store it in tmp */
+		#pragma omp for         
+		for (long i = 0; i < N; i++)
+		{
+			for (long j = 0; j < n; j++)
+			{
+				tmp[i*n + j] = d[j] ? Av[i*n + j] : v[i * n + j];
+			}
+		}
+		
+		#pragma omp for 
+		for (long i = 0; i < N; i += n)
+		{
+			matmul_CpAB(&tmp[i*n], &v[i*n], c);
+		}
 
-	for (long i = 0; i < N; i += n)
-		matmul_CpAB(&tmp[i*n], &v[i*n], c);
-	for (long i = 0; i < N; i += n)
-		matmul_CpAB(&tmp[i*n], &p[i*n], vtAvd);
-	
-	/* compute the next value of p */
-	for (long i = 0; i < N; i++)
-		for (long j = 0; j < n; j++)
-			p[i * n + j] = d[j] ? 0 : p[i * n + j];
+		#pragma omp for
+		for (long i = 0; i < N; i += n)
+		{
+			matmul_CpAB(&tmp[i*n], &p[i*n], vtAvd);
+		}
 
-	for (long i = 0; i < N; i += n)
-		matmul_CpAB(&p[i*n], &v[i*n], winv);
+		/* compute the next value of p */
+		#pragma omp for
+		for (long i = 0; i < N; i++)
+		{
+			for (long j = 0; j < n; j++)
+			{
+				p[i * n + j] = d[j] ? 0 : p[i * n + j];
+			}
+		}
+		
+		#pragma omp for
+		for (long i = 0; i < N; i += n)
+		{
+			matmul_CpAB(&p[i*n], &v[i*n], winv);
+		}
+	}	
 }
 
 void verbosity()
@@ -672,6 +740,7 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
 	}
 			
 	/* prepare initial values */
+	#pragma omp parallel for
 	for(long i = 0; i < block_size_pad; i++)
 	{
 		Av[i] = 0;
@@ -680,6 +749,7 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
 		tmp[i] = 0;
 	}
 
+	#pragma omp parallel for
 	for(long i = 0; i < block_size; i++)
 	{
 		v[i] = random64() % prime;
@@ -709,6 +779,7 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
 		orthogonalize(v, tmp, p, d, vtAv, vtAAv, winv, nrows, Av);
 
 		/* the next value of v is in tmp ; copy */
+		#pragma omp parallel for
 		for(long i = 0; i < block_size; i++)
 		{
 			v[i] = tmp[i];
@@ -725,9 +796,6 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
 
 	return v;
 }
-
-/**************************** MPI functions ************************/
-
 
 /**************************** dense vector block IO ************************/
 
