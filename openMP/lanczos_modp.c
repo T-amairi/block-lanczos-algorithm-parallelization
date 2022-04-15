@@ -346,17 +346,28 @@ void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 
 /* C += A*B   for n x n matrices */
 void matmul_CpAB(u32 * C, u32 const * A, u32 const * B)
 {
+	u32 Bt[n * n];
+
+	for(int i = 0; i < n; i++)
+    {
+        for(int j = 0; j < n; j++)
+        {
+            Bt[j + i*n] = B[i + j*n];
+        }
+    }
+    
 	for (int i = 0; i < n; i++)
 	{
 		for (int j = 0; j < n; j++)
 		{
 			u64 x = C[i * n + j];
 
+			#pragma omp simd reduction(+:x)
 			for (int k = 0; k < n; k++)
 			{	
 				u64 y = A[i * n + k];
-				u64 z = B[k * n + j];
-				x = x + y * z;
+				u64 z = Bt[j * n + k];
+				x += y * z;
 			}
 
 			C[i * n + j] = x % prime;
@@ -367,17 +378,98 @@ void matmul_CpAB(u32 * C, u32 const * A, u32 const * B)
 /* C += transpose(A)*B   for n x n matrices */
 void matmul_CpAtB(u32 * C, u32 const * A, u32 const * B)
 {
+	u32 At[n * n] __attribute__((aligned(32)));
+	u32 Bt[n * n] __attribute__((aligned(32)));
+
+	for(int i = 0; i < n; i++)
+    {
+        for(int j = 0; j < n; j++)
+        {
+            At[j + i*n] = A[i + j*n];
+			Bt[j + i*n] = B[i + j*n];
+        }
+    }
+
 	for (int i = 0; i < n; i++)
 	{
 		for (int j = 0; j < n; j++)
 		{
 			u64 x = C[i * n + j];
 
+			#pragma omp simd reduction(+:x) simdlen(32)
 			for (int k = 0; k < n; k++)
 			{
-				u64 y = A[k * n + i];
-				u64 z = B[k * n + j];
-				x = x + y * z;
+				u64 y = At[i * n + k];
+				u64 z = Bt[j * n + k];
+				x += y * z;
+			}
+
+			C[i * n + j] = x % prime;
+		}
+	}	
+}
+
+/* C += A*B   for n x n matrices */
+void matmul_CpAB_OpenMP(u32 * C, u32 const * A, u32 const * B)
+{
+	u32 Bt[n * n];
+
+	for(int i = 0; i < n; i++)
+    {
+        for(int j = 0; j < n; j++)
+        {
+            Bt[j + i*n] = B[i + j*n];
+        }
+    }
+    
+	#pragma omp parallel for
+	for (int i = 0; i < n; i++)
+	{
+		for (int j = 0; j < n; j++)
+		{
+			u64 x = C[i * n + j];
+
+			#pragma omp simd reduction(+:x)
+			for (int k = 0; k < n; k++)
+			{	
+				u64 y = A[i * n + k];
+				u64 z = Bt[j * n + k];
+				x += y * z;
+			}
+
+			C[i * n + j] = x % prime;
+		}
+	}
+}
+
+/* C += transpose(A)*B   for n x n matrices */
+void matmul_CpAtB_OpenMP(u32 * C, u32 const * A, u32 const * B)
+{
+	u32 At[n * n] __attribute__((aligned(32)));
+	u32 Bt[n * n] __attribute__((aligned(32)));
+
+	for(int i = 0; i < n; i++)
+    {
+        for(int j = 0; j < n; j++)
+        {
+            At[j + i*n] = A[i + j*n];
+			Bt[j + i*n] = B[i + j*n];
+        }
+    }
+
+	#pragma omp parallel for
+	for (int i = 0; i < n; i++)
+	{
+		for (int j = 0; j < n; j++)
+		{
+			u64 x = C[i * n + j];
+
+			#pragma omp simd reduction(+:x) simdlen(32)
+			for (int k = 0; k < n; k++)
+			{
+				u64 y = At[i * n + k];
+				u64 z = Bt[j * n + k];
+				x += y * z;
 			}
 
 			C[i * n + j] = x % prime;
@@ -565,7 +657,7 @@ void orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const
 		}
 	}
 		
-	matmul_CpAB(c, winv, spliced);
+	matmul_CpAB_OpenMP(c, winv, spliced);
 
 	for (int i = 0; i < n; i++)
 	{
