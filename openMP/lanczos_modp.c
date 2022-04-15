@@ -328,7 +328,7 @@ void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 
 			{
 				u64 a = cache[i * n + l];
 				u64 b = x[j * n + l];
-				cache[i * n + l] = (a + v * b);
+				cache[i * n + l] = (a + v * b) % prime;
 			}
 		}
 
@@ -378,8 +378,8 @@ void matmul_CpAB(u32 * C, u32 const * A, u32 const * B)
 /* C += transpose(A)*B   for n x n matrices */
 void matmul_CpAtB(u32 * C, u32 const * A, u32 const * B)
 {
-	u32 At[n * n] __attribute__((aligned(32)));
-	u32 Bt[n * n] __attribute__((aligned(32)));
+	u32 At[n * n];
+	u32 Bt[n * n];
 
 	for(int i = 0; i < n; i++)
     {
@@ -396,7 +396,7 @@ void matmul_CpAtB(u32 * C, u32 const * A, u32 const * B)
 		{
 			u64 x = C[i * n + j];
 
-			#pragma omp simd reduction(+:x) simdlen(32)
+			#pragma omp simd reduction(+:x)
 			for (int k = 0; k < n; k++)
 			{
 				u64 y = At[i * n + k];
@@ -445,8 +445,8 @@ void matmul_CpAB_OpenMP(u32 * C, u32 const * A, u32 const * B)
 /* C += transpose(A)*B   for n x n matrices */
 void matmul_CpAtB_OpenMP(u32 * C, u32 const * A, u32 const * B)
 {
-	u32 At[n * n] __attribute__((aligned(32)));
-	u32 Bt[n * n] __attribute__((aligned(32)));
+	u32 At[n * n];
+	u32 Bt[n * n];
 
 	for(int i = 0; i < n; i++)
     {
@@ -464,7 +464,7 @@ void matmul_CpAtB_OpenMP(u32 * C, u32 const * A, u32 const * B)
 		{
 			u64 x = C[i * n + j];
 
-			#pragma omp simd reduction(+:x) simdlen(32)
+			#pragma omp simd reduction(+:x)
 			for (int k = 0; k < n; k++)
 			{
 				u64 y = At[i * n + k];
