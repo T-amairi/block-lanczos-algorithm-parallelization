@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -std=c99 -g -Wall -Wextra -Werror -O3 -march=native -fopt-info-vec -I.
+CFLAGS = -std=c99 -g -Wall -Wextra -O3 -march=native -I.
 LDFLAGS =
 
 # Uncomment these for OpenMP
@@ -9,7 +9,7 @@ LDFLAGS += -fopenmp
 all: lanczos_modp checker_modp
 lanczos_modp: mmio.o lanczos_modp.o
 lanczos_modp.o: lanczos_modp.c mmio.h
-checker_modp: mmio.o checker_modp.o
+checker_modp:   mmio.o checker_modp.o
 checker_modp.o: checker_modp.c mmio.h
 
 clean:

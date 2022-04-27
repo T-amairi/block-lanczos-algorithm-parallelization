@@ -53,3 +53,9 @@ dkms.conf
 
 # vscode 
 .vscode
+
+#Matrix folder
+TF/*
+
+#python script file
+project_script/*

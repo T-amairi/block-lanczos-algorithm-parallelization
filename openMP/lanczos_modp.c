@@ -206,24 +206,6 @@ void process_command_line_options(int argc, char ** argv)
 	}
 }
 
-/****************** added optimization ******************/
-
-/* Compute x mod n */
-u32 fast_mod(u64 x, u64 n)
-{
-	if(x < n)
-	{
-		return x;
-	}
-
-	else if(x > n)
-	{
-		return x % n;
-	}
-
-	return 0;
-}
-
 /****************** sparse matrix operations ******************/
 
 /* Load a matrix from a file in "list of triplet" representation */
@@ -301,7 +283,7 @@ void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 
 	int const * Mi = M->i;
 	int const * Mj = M->j;
 	u32 const * Mx = M->x;
-	u32 cache[block_size_pad];
+	u64 cache[block_size_pad];
 	
 	#pragma omp parallel
 	{
@@ -328,7 +310,7 @@ void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 
 			{
 				u64 a = cache[i * n + l];
 				u64 b = x[j * n + l];
-				cache[i * n + l] = (a + v * b) % prime;
+				cache[i * n + l] = (a + v * b); //%prime
 			}
 		}
 
@@ -608,37 +590,19 @@ int semi_inverse(u32 const * M_, u32 * winv, u32 * d)
 void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 const * v)
 {
 	long size = n * n;
-	u32 cache1[size];
-	u32 cache2[size];
-
-	#pragma omp parallel
+	
+	#pragma omp parallel for
+	for (long i = 0; i < size; i++)
 	{
-		#pragma omp for
-		for (int i = 0; i < size; i++)
-		{
-			cache1[i] = 0;
-			cache2[i] = 0;
-		}
-		
-		#pragma omp for reduction(+:cache1[0:size])
-		for (int i = 0; i < N; i += n)
-		{
-			matmul_CpAtB(cache1, &v[i*n], &Av[i*n]);
-		}
-
-		#pragma omp for reduction(+:cache2[0:size])
-		for (int i = 0; i < N; i += n)
-		{
-			matmul_CpAtB(cache2, &Av[i*n], &Av[i*n]);
-		}
-
-		#pragma omp for
-		for(long i = 0; i < size; i++)
-		{
-			vtAv[i] = cache1[i] % prime;
-			vtAAv[i] = cache2[i] % prime;
-		}	
+		vtAv[i] = 0;
+		vtAAv[i] = 0;
 	}
+
+	for (int i = 0; i < N; i += n)
+	{
+		matmul_CpAtB(vtAv, &v[i*n], &Av[i*n]);
+		matmul_CpAtB(vtAAv, &Av[i*n], &Av[i*n]);
+	}		
 }
 
 /* Compute the next values of v (in tmp) and p */
@@ -657,7 +621,7 @@ void orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const
 		}
 	}
 		
-	matmul_CpAB_OpenMP(c, winv, spliced);
+	matmul_CpAB(c, winv, spliced);
 
 	for (int i = 0; i < n; i++)
 	{
