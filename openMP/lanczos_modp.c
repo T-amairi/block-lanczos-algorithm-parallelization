@@ -590,19 +590,34 @@ int semi_inverse(u32 const * M_, u32 * winv, u32 * d)
 void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 const * v)
 {
 	long size = n * n;
-	
+	u32 cache1[size];
+	u32 cache2[size];
+
 	#pragma omp parallel for
 	for (long i = 0; i < size; i++)
 	{
 		vtAv[i] = 0;
 		vtAAv[i] = 0;
+		cache1[i] = 0;
+		cache2[i] = 0;
 	}
-
-	for (int i = 0; i < N; i += n)
+	
+	#pragma omp parallel firstprivate(cache1,cache2)
 	{
-		matmul_CpAtB(vtAv, &v[i*n], &Av[i*n]);
-		matmul_CpAtB(vtAAv, &Av[i*n], &Av[i*n]);
-	}		
+		#pragma omp for nowait
+		for (int i = 0; i < N; i += n)
+		{
+			matmul_CpAtB(cache1, &v[i*n], &Av[i*n]);
+			matmul_CpAtB(cache2, &Av[i*n], &Av[i*n]);
+		}
+
+		#pragma omp critical 
+		for (long i = 0; i < size; i++)
+		{
+			vtAv[i] = ((u64) vtAv[i] + cache1[i]) % prime;
+			vtAAv[i] = ((u64) vtAAv[i] + cache2[i]) % prime;
+		}
+	}	
 }
 
 /* Compute the next values of v (in tmp) and p */
