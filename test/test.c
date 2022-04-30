@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <err.h>
 #include <sys/time.h>
+#include <stdbool.h>
 #include "mmio.h"
 
 typedef uint64_t u64;
@@ -499,6 +500,110 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32**
     }
 }
 
+/* Y += m*v or Y += transpose(m)*v, according to the transpose flag */ 
+void mpi_matrix_vector_product(const struct sparsematrix_t *M, const struct sparsematrix_t *m, const u32* v, int n, bool transpose)
+{
+    long nnz = m->nnz;
+    int nrows = transpose ? m->ncols : m->nrows;
+    int Nrows = transpose ? M->ncols : M->nrows;
+    int size = nrows * n;
+    int SIZE = Nrows * n;
+
+    int const * mi = m->i;
+    int const * mj = m->j;
+    u32 const * mx = m->x;
+
+    u32 tmp[size];
+    u32 y[size];
+    u32 Y[SIZE];
+    
+    for(long i = 0; i < size; i++)
+    {
+        tmp[i] = 0;
+        y[i] = 0;
+    }
+           
+    for(long k = 0; k < nnz; k++)
+    {
+        int i = transpose ? mj[k] : mi[k];
+        int j = transpose ? mi[k] : mj[k];
+        u64 x = mx[k];
+
+        for(int l = 0; l < n; l++)
+        {
+            u64 a = tmp[i * n + l];
+            u64 b = v[j * n + l];
+            tmp[i * n + l] = (a + x * b); //% prime;
+        }
+    }
+
+    MPI_Reduce(tmp,y,size,MPI_INT,MPI_SUM,0,rowComm);
+
+    if(myGridCoord[1] == 0)
+    {
+        if(myGridCoord[0] == 0)
+        {
+            for(long i = 0; i < SIZE; i++)
+            {
+                Y[i] = (i < size) ? y[i] : 0;
+            }
+
+            int displacements[dims[1] - 1];
+            int counts[dims[1] - 1];
+            int count = n * (transpose ? M->ncols / dims[1] : M->nrows / dims[0]);
+
+            for(int j = 1; j < dims[1]; j++)
+            {
+                counts[j] = count;
+                displacements[j] = size + count * (j - 1);
+            }
+
+            MPI_Gatherv(MPI_IN_PLACE,size,MPI_INT,Y,counts,displacements,MPI_INT,0,colComm);
+        }
+
+        else
+        {
+            MPI_Gatherv(y,size,MPI_INT,NULL,NULL,NULL,MPI_INT,0,colComm);
+        }
+    }
+
+    if(myGridRank == 0)
+        for(long i = 0; i < SIZE; i++)
+        {
+            printf("Rank %d, y[%ld] = %d\n",myGridRank,i,Y[i]);
+        }
+}
+
+void sparse_matrix_vector_product(struct sparsematrix_t const * M, u32 const * x, bool transpose, int n)
+{
+        long nnz = M->nnz;
+        int nrows = transpose ? M->ncols : M->nrows;
+        int const * Mi = M->i;
+        int const * Mj = M->j;
+        u32 const * Mx = M->x;
+        u32 y[nrows * n];
+        
+        for (long i = 0; i < nrows * n; i++)
+                y[i] = 0;
+                
+        for (long k = 0; k < nnz; k++) {
+                int i = transpose ? Mj[k] : Mi[k];
+                int j = transpose ? Mi[k] : Mj[k];
+                u64 v = Mx[k];
+                for (int l = 0; l < n; l++) {
+                        u64 a = y[i * n + l];
+                        u64 b = x[j * n + l];
+                        y[i * n + l] = (a + v * b) % prime;
+                }
+        }
+
+        if(myGridRank == 0)
+        for(long i = 0; i < nrows * n; i++)
+        {
+            printf("y[%ld] = %d\n",i,y[i]);
+        }
+}
+
 /* Free used memory */
 void mpi_free_matrices(struct sparsematrix_t *M, struct sparsematrix_t *m)
 {
@@ -528,24 +633,18 @@ int main()
     u32 V[n * M.ncols]; //vector
     u32* v = NULL; //sub block of the vector V
     
-    mpi_create_vector_block(&M,V,&v,n);
-    MPI_Barrier(gridComm);
-
-    int dim = M.ncols;
-    int div = dim / dims[1];
-    int mod = dim % dims[1];
-
-    int N = (myGridCoord[1] == 0) ? div + mod : div;
-    int size = n * N;
-
-    for(int i = 0; i < size; i++)
+    for(int i = 0; i < n * M.ncols; i++)
     {
-        printf("Rank in grid : %d, value of v : %d\n",myGridRank,v[i]);
+        V[i] = i + 1;
     }
-    
+
+    mpi_create_vector_block(&M,V,&v,n);
+    mpi_matrix_vector_product(&M,&m,v,n,false);
+    sparse_matrix_vector_product(&M,V,false,n);
     mpi_free_matrices(&M,&m);
     
     MPI_Finalize();
+
 
     return 0;
 }

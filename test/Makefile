@@ -1,5 +1,5 @@
 CC = mpicc
-CFLAGS = -std=c99 -g -Wall -Wextra -Werror -O3 -march=native -I.
+CFLAGS = -std=c99 -g -Wall -Wextra -O3 -march=native -I.
 LDFLAGS =
 
 all: test checker_modp
