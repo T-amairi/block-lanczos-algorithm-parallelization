@@ -269,10 +269,11 @@ void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 
         int const * Mi = M->i;
         int const * Mj = M->j;
         u32 const * Mx = M->x;
-        
+ 
         for (long i = 0; i < nrows * n; i++)
                 y[i] = 0;
-                
+
+        printf("Tranpose : %d\n",transpose);      
         for (long k = 0; k < nnz; k++) {
                 int i = transpose ? Mj[k] : Mi[k];
                 int j = transpose ? Mi[k] : Mj[k];
@@ -280,7 +281,19 @@ void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 
                 for (int l = 0; l < n; l++) {
                         u64 a = y[i * n + l];
                         u64 b = x[j * n + l];
+                        printf("v = %ld, x = %ld\n",v,b);
                         y[i * n + l] = (a + v * b) % prime;
+                }
+        }
+        
+
+        printf("\nTranpose : %d\n",!transpose);      
+        for (long k = 0; k < nnz; k++) {
+                int j = !transpose ? Mi[k] : Mj[k];
+                u64 v = Mx[k];
+                for (int l = 0; l < n; l++) {
+                        u64 b = x[j * n + l];
+                        printf("v = %ld, x = %ld\n",v,b);
                 }
         }
 }
@@ -632,11 +645,6 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
 
                 sparse_matrix_vector_product(tmp, M, v, !transpose);
                 sparse_matrix_vector_product(Av, M, tmp, transpose);
-
-                for (long i = 0; i < block_size_pad; i++)
-                {
-                        printf("Av[i] = %d\n",Av[i]);
-                }
 
                 u32 vtAv[n * n];
                 u32 vtAAv[n * n];

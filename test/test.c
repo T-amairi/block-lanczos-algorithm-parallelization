@@ -501,28 +501,28 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32**
 }
 
 /* Y += m*v or Y += transpose(m)*v, according to the transpose flag */ 
-void mpi_matrix_vector_product(const struct sparsematrix_t *M, const struct sparsematrix_t *m, const u32* v, int n, bool transpose)
+void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u32* v, int n, bool transpose)
 {
+	//set some variables
     long nnz = m->nnz;
     int nrows = transpose ? m->ncols : m->nrows;
-    int Nrows = transpose ? M->ncols : M->nrows;
     int size = nrows * n;
-    int SIZE = Nrows * n;
-
+    
     int const * mi = m->i;
     int const * mj = m->j;
     u32 const * mx = m->x;
 
     u32 tmp[size];
     u32 y[size];
-    u32 Y[SIZE];
     
+	//prepare the arrays before computing
     for(long i = 0; i < size; i++)
     {
         tmp[i] = 0;
         y[i] = 0;
     }
-           
+
+	//compute the partial product with m and v 
     for(long k = 0; k < nnz; k++)
     {
         int i = transpose ? mj[k] : mi[k];
@@ -533,38 +533,30 @@ void mpi_matrix_vector_product(const struct sparsematrix_t *M, const struct spar
         {
             u64 a = tmp[i * n + l];
             u64 b = v[j * n + l];
-            tmp[i * n + l] = (a + x * b); //% prime;
+            tmp[i * n + l] = (a + x * b) % prime;
         }
     }
 
+	//sum by row (each process at the first column of the grid will get the sum)
     MPI_Reduce(tmp,y,size,MPI_INT,MPI_SUM,0,rowComm);
 
+	//gather all the values by the first column
     if(myGridCoord[1] == 0)
     {
-        if(myGridCoord[0] == 0)
-        {
-            for(long i = 0; i < SIZE; i++)
-            {
-                Y[i] = (i < size) ? y[i] : 0;
-            }
+		int counts[dims[1]]; //number of points for each process
+		int disps[dims[1]]; //the displacement of these points in the array Y
 
-            int displacements[dims[1] - 1];
-            int counts[dims[1] - 1];
-            int count = n * (transpose ? M->ncols / dims[1] : M->nrows / dims[0]);
+		//get the counts from the other process in the same column
+		MPI_Gather(&size,1,MPI_INT,counts,1,MPI_INT,0,colComm);
 
-            for(int j = 1; j < dims[1]; j++)
-            {
-                counts[j] = count;
-                displacements[j] = size + count * (j - 1);
-            }
+		//compute the displacement based on the counts
+		for(int i = 0; i < dims[1]; i++)
+		{
+			disps[i] = (i > 0) ? (disps[i-1] + counts[i-1]) : 0;
+		}
 
-            MPI_Gatherv(MPI_IN_PLACE,size,MPI_INT,Y,counts,displacements,MPI_INT,0,colComm);
-        }
-
-        else
-        {
-            MPI_Gatherv(y,size,MPI_INT,NULL,NULL,NULL,MPI_INT,0,colComm);
-        }
+		//gather all the data in Y 
+		MPI_Gatherv(y,size,MPI_INT,Y,counts,disps,MPI_INT,0,colComm);
     }
 }
 
@@ -584,26 +576,66 @@ void mpi_free_matrices(struct sparsematrix_t *M, struct sparsematrix_t *m)
     free(m->x);
 }
 
+/* y += M*x or y += transpose(M)*x, according to the transpose flag */ 
+void sparse_matrix_vector_product(struct sparsematrix_t const * M, u32 const * x, bool transpose, int n)
+{
+        long nnz = M->nnz;
+        int nrows = transpose ? M->ncols : M->nrows;
+        int const * Mi = M->i;
+        int const * Mj = M->j;
+        u32 const * Mx = M->x;
+        u32 y[nrows*n];
+
+        //printf("Tranpose : %d\n",transpose);
+        
+        for (long i = 0; i < nrows * n; i++)
+                y[i] = 0;
+                
+        for (long k = 0; k < nnz; k++) {
+                int i = transpose ? Mj[k] : Mi[k];
+                int j = transpose ? Mi[k] : Mj[k];
+                u64 v = Mx[k];
+                for (int l = 0; l < n; l++) {
+                        u64 a = y[i * n + l];
+                        u64 b = x[j * n + l];
+                        //printf("v = %ld, x = %ld\n",v,b);
+                        y[i * n + l] = (a + v * b) % prime;
+                }
+        }
+
+        for (int i = 0; i < nrows * n; i++)
+            printf("y[%d] : %d\n",i,y[i]);
+}
+
 int main()
 {
     struct sparsematrix_t M; //matrix loaded from the file
     struct sparsematrix_t m; //sub block of the matrix M
 
     mpi_init(&M,&m);
-    mpi_get_matrix_size(&M,"./Trec5.mtx");
+    mpi_get_matrix_size(&M,"../TF/Trec5.mtx");
     mpi_create_matrix_block(&M,&m);
     
     int n = 3;
     u32 V[n * M.ncols]; //vector
+    u32 temp[n * M.ncols];
     u32* v = NULL; //sub block of the vector V
     
     for(int i = 0; i < n * M.ncols; i++)
     {
         V[i] = i + 1;
+        temp[i] = 0;
     }
 
     mpi_create_vector_block(&M,V,&v,n);
-    mpi_matrix_vector_product(&M,&m,v,n,true);
+    mpi_matrix_vector_product(temp,&m,v,n,false);
+
+    if(myGridRank == 1)
+    {
+        //sparse_matrix_vector_product(&M,V,true,n);
+        sparse_matrix_vector_product(&m,v,true,n);
+    }
+
     mpi_free_matrices(&M,&m);
     MPI_Finalize();
 

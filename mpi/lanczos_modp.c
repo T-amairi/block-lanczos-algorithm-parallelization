@@ -845,6 +845,7 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32**
 /* Y += m*v or Y += transpose(m)*v, according to the transpose flag */ 
 void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u32* v, int n, bool transpose)
 {
+	//set some variables
     long nnz = m->nnz;
     int nrows = transpose ? m->ncols : m->nrows;
     int size = nrows * n;
@@ -856,12 +857,14 @@ void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u3
     u32 tmp[size];
     u32 y[size];
     
+	//prepare the arrays before computing
     for(long i = 0; i < size; i++)
     {
         tmp[i] = 0;
         y[i] = 0;
     }
-           
+
+	//compute the partial product with m and v 
     for(long k = 0; k < nnz; k++)
     {
         int i = transpose ? mj[k] : mi[k];
@@ -876,20 +879,25 @@ void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u3
         }
     }
 
+	//sum by row (each process at the first column of the grid will get the sum)
     MPI_Reduce(tmp,y,size,MPI_INT,MPI_SUM,0,rowComm);
 
+	//gather all the values by the first column
     if(myGridCoord[1] == 0)
     {
-		int counts[dims[1]];
-		int disps[dims[1]];
+		int counts[dims[1]]; //number of points for each process
+		int disps[dims[1]]; //the displacement of these points in the array Y
 
+		//get the counts from the other process in the same column
 		MPI_Gather(&size,1,MPI_INT,counts,1,MPI_INT,0,colComm);
-		
+
+		//compute the displacement based on the counts
 		for(int i = 0; i < dims[1]; i++)
 		{
 			disps[i] = (i > 0) ? (disps[i-1] + counts[i-1]) : 0;
 		}
 
+		//gather all the data in Y 
 		MPI_Gatherv(y,size,MPI_INT,Y,counts,disps,MPI_INT,0,colComm);
     }
 }
@@ -1126,6 +1134,7 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 	}
 	
 	bool stop = false;
+	u32* sub_v = NULL; //sub block of the vector 
 
 	while(true)
 	{
@@ -1140,9 +1149,23 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 		if(myGridRank == 0) 
 			sparse_matrix_vector_product(tmp, M, v, !transpose);
 
-		u32* sub_v = NULL; //sub block of the vector 
+		//mpi_create_vector_block(M,v,&sub_v,n);
+    	//mpi_matrix_vector_product(tmp,m,sub_v,n,!transpose);
+
+		if(sub_v != NULL)
+		{
+			free(sub_v);
+			sub_v = NULL;
+		}
+
 		mpi_create_vector_block(M,tmp,&sub_v,n);
-    	mpi_matrix_vector_product(Av,m,sub_v,n,false);
+    	mpi_matrix_vector_product(Av,m,sub_v,n,transpose);
+
+		if(sub_v != NULL)
+		{
+			free(sub_v);
+			sub_v = NULL;
+		}
 
 		if(myGridRank == 0)
 		{
@@ -1151,8 +1174,6 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 				//printf("tmp[i] = %d\n",Av[i]);
 			}
 		}
-
-		if(sub_v != NULL) free(sub_v);
 
 		u32 vtAv[n * n];
 		u32 vtAAv[n * n];
@@ -1241,6 +1262,7 @@ int main(int argc, char ** argv)
 		free(kernel);
 	}
 
+	mpi_free_matrices(&M,&m);
 	MPI_Finalize();
 	
 	exit(EXIT_SUCCESS);
