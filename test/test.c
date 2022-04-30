@@ -105,6 +105,8 @@ void sparsematrix_mm_load(struct sparsematrix_t * M, char const * filename)
 int p; //total number of processes 
 int myRank; //rank in MPI_COMM_WORLD 
 int myGridRank; //rank in gridComm
+int myRowRank; //rank in rowComm
+int myColRank; //rank in colComm
 int myGridCoord[2]; //(x,y) coordinates in the grid topology
 int dims[2]; //dimensions of the virtual grid
 int notWrapping[2] = {0,0}; //flags to turn off wrapping in grid
@@ -140,9 +142,11 @@ void mpi_init(struct sparsematrix_t *M, struct sparsematrix_t *m)
 
     //generate row communicator based on the grid coordinates
     MPI_Comm_split(gridComm,myGridCoord[0],myGridCoord[1],&rowComm);
+    MPI_Comm_rank(rowComm,&myRowRank);
 
     //generate column communicator based on the grid coordinates
     MPI_Comm_split(gridComm,myGridCoord[1],myGridCoord[0],&colComm);
+    MPI_Comm_rank(colComm,&myColRank);
 
     //set matrices
     M->i = NULL;
@@ -168,6 +172,9 @@ void mpi_get_matrix_size(struct sparsematrix_t *M,char const * filename)
     {
 	    sparsematrix_mm_load(M,filename);
     }
+
+    //wait until the process 0 loads the matrix
+    MPI_Barrier(gridComm);
 
     //broadcast the size of the loaded matrix 
     MPI_Bcast(&(M->nrows),1,MPI_INT,0,gridComm);
@@ -311,7 +318,7 @@ void mpi_create_matrix_block(const struct sparsematrix_t *M, struct sparsematrix
                 }
 
                 //case 1 : current process is 0
-                if(dest_rank == 0 && nnz != 0)
+                if(dest_rank == myGridRank && nnz != 0)
                 {
                     //malloc
                     int *mi = malloc(nnz * sizeof(*mi));
@@ -384,7 +391,7 @@ void mpi_create_matrix_block(const struct sparsematrix_t *M, struct sparsematrix
 }
 
 /* Alloc memory for the sub vector v and get its value */ 
-void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32* v, int n)
+void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32** v, int n)
 {
     MPI_Status status; //result of MPI_Recv call
     int coord[2] = {0,0}; //to store the grid coord of the current process
@@ -399,7 +406,7 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32* 
     int low;
     int high = 0;
 
-    // per grid column 
+    /* per grid column */ 
     for(int j = 0; j < dims[1]; j++)
     {
         coord[1] = j; //only the first row each time
@@ -413,26 +420,26 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32* 
         if(myGridRank == 0)
         {
             //set the correct interval corresponding to the current process 
-            low = (j == 0) ? 0 : high + 1;
+            low = (j == 0) ? 0 : high;
             high = (j == dims[1] - 1) ? dim * n : ((div + mod) + div * j) * n;
 
             //set the buffer
-            u32 buffer[size];
+            int buffer[size];
            
             //select correct value
             for(int k = low; k < high; k++)
             {
-               buffer[k] = V[k];
+                buffer[k - low] = V[k];
             }
 
             //case 1 : current process is 0
-            if(dest_rank == 0)
+            if(dest_rank == myGridRank)
             {
                 //malloc
-                v = malloc(size * sizeof(v));
-               
+                *v = malloc(size * sizeof(*v));
+
                 //check the allocation
-                if(v == NULL)
+                if(*v == NULL)
                 {
                     printf("Cannot allocate memory for sub block v\n");
                     MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
@@ -441,7 +448,7 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32* 
                 //get values from buffer
                 for(int k = 0; k < size; k++)
                 {
-                    v[k] = buffer[k];
+                    (*v)[k] = buffer[k];
                 }
             }
 
@@ -456,17 +463,38 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32* 
         else if(dest_rank == myGridRank)
         {
             //malloc
-            v = malloc(size * sizeof(v));
+            *v = malloc(size * sizeof(*v));
             
             //check the allocation
-            if(v == NULL)
+            if(*v == NULL)
             {
                 printf("Cannot allocate memory for sub block v\n");
                 MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
             }
             
             //get the value
-            MPI_Recv(v,size,MPI_INT,0,0,gridComm,&status);
+            MPI_Recv(*v,size,MPI_INT,0,0,gridComm,&status);
+        }
+
+        /* broadcast to all process in the same column */
+        if(myGridCoord[1] == j)
+        {
+            //first the receiving processes alloc memory for the sub block v
+            if(myGridRank != dest_rank)
+            {
+                //malloc
+                *v = malloc(size * sizeof(*v));
+                
+                //check the allocation
+                if(*v == NULL)
+                {
+                    printf("Cannot allocate memory for sub block v\n");
+                    MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
+                }
+            }
+
+            //and then, broadcast v 
+            MPI_Bcast(*v,size,MPI_INT,0,colComm);
         }
     }
 }
@@ -495,14 +523,26 @@ int main()
     mpi_init(&M,&m);
     mpi_get_matrix_size(&M,"./Trec5.mtx");
     mpi_create_matrix_block(&M,&m);
+    
+    int n = 3;
+    u32 V[n * M.ncols]; //vector
+    u32* v = NULL; //sub block of the vector V
+    
+    mpi_create_vector_block(&M,V,&v,n);
+    MPI_Barrier(gridComm);
 
-    printf("Rank in grid : %d, nnz : %ld, nrows : %d, ncols : %d\n",myGridRank,m.nnz,m.nrows,m.ncols);
+    int dim = M.ncols;
+    int div = dim / dims[1];
+    int mod = dim % dims[1];
 
-    for(long i = 0; i < m.nnz; i++)
+    int N = (myGridCoord[1] == 0) ? div + mod : div;
+    int size = n * N;
+
+    for(int i = 0; i < size; i++)
     {
-        printf("Rank in grid : %d, i : %d, j : %d, x : %d\n",myGridRank,m.i[i],m.j[i],m.x[i]);
+        printf("Rank in grid : %d, value of v : %d\n",myGridRank,v[i]);
     }
-
+    
     mpi_free_matrices(&M,&m);
     
     MPI_Finalize();
