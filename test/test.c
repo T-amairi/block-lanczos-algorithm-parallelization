@@ -114,7 +114,7 @@ MPI_Comm colComm; //column subset communicator
 
 /****************** MPI functions ******************/
 
-/* Initialize MPI and the virtual grid topology */
+/* Initialize MPI, the virtual grid topology and the matrices */
 void mpi_init(struct sparsematrix_t *M, struct sparsematrix_t *m)
 {
     //init mpi env
@@ -177,7 +177,7 @@ void mpi_get_matrix_size(struct sparsematrix_t *M,char const * filename)
     if(M->nrows < dims[0] || M->ncols < dims[1])
     {
         printf("Matrix size to small : why using MPI ?\n");
-        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        MPI_Abort(MPI_COMM_WORLD,MPI_ERR_IO);
     }
 }
 
@@ -215,7 +215,7 @@ void mpi_get_block_size(const struct sparsematrix_t *M, struct sparsematrix_t *m
 }
 
 /* Alloc memory for the sub block m and get its value */
-void mpi_create_block(const struct sparsematrix_t *M, struct sparsematrix_t *m)
+void mpi_create_matrix_block(const struct sparsematrix_t *M, struct sparsematrix_t *m)
 {
     mpi_get_block_size(M,m); //get sub block size
 
@@ -224,7 +224,7 @@ void mpi_create_block(const struct sparsematrix_t *M, struct sparsematrix_t *m)
     long int nnz; //number of non zero
     MPI_Status status; //result of MPI_Recv call
  
-    //get intervals for each coord
+    //get the slicing for each coord
     int div_x = M->nrows / dims[0];
     int mod_x = M->nrows % dims[0];
     int div_y = M->ncols / dims[1];
@@ -279,7 +279,7 @@ void mpi_create_block(const struct sparsematrix_t *M, struct sparsematrix_t *m)
             coord[0] = i; //save x coord 
             MPI_Cart_rank(gridComm,coord,&dest_rank); //get the rank of the corresponding process 
 
-            //process 0 computes the correct value and sends them
+            //process 0 computes the correct value and sends it
             if(myGridRank == 0)
             {
                 //get the correct interval for the current grid row
@@ -301,9 +301,10 @@ void mpi_create_block(const struct sparsematrix_t *M, struct sparsematrix_t *m)
                 for(int k = low_p; k <= high_p; k++)
                 {
                     if(M->i[k] >= low && M->i[k] <= high)
-                    {
-                        buffer_i[nnz] = M->i[k];
-                        buffer_j[nnz] = M->j[k];
+                    {   
+                        //shift the coord of each point x
+                        buffer_i[nnz] = (i == 0) ? M->i[k] : M->i[k] - low;
+                        buffer_j[nnz] = (j == 0) ? M->j[k] : M->j[k] - (max_col - (div_y * j - 1));
                         buffer_x[nnz] = M->x[k];
                         nnz++; 
                     }
@@ -320,8 +321,8 @@ void mpi_create_block(const struct sparsematrix_t *M, struct sparsematrix_t *m)
                     //check the allocation
                     if(mi == NULL || mj == NULL || mx == NULL)
                     {
-                        printf("Cannot allocate memory for sub block\n");
-                        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+                        printf("Cannot allocate memory for sub block m\n");
+                        MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
                     }
 
                     //get values from buffers
@@ -329,7 +330,7 @@ void mpi_create_block(const struct sparsematrix_t *M, struct sparsematrix_t *m)
                     {
                         mi[k] = buffer_i[k];
                         mj[k] = buffer_j[k]; 
-                        mx[k] = (u32) buffer_x[k];
+                        mx[k] = buffer_x[k];
                     }
 
                     //link to sub block m
@@ -355,16 +356,6 @@ void mpi_create_block(const struct sparsematrix_t *M, struct sparsematrix_t *m)
                 //get first nnz 
                 MPI_Recv(&nnz,1,MPI_LONG,0,0,gridComm,&status);
 
-                //set buffers
-                int buffer_i[nnz];
-                int buffer_j[nnz];
-                int buffer_x[nnz];
-
-                //get the rest 
-                MPI_Recv(buffer_i,nnz,MPI_INT,0,1,gridComm,&status);
-                MPI_Recv(buffer_j,nnz,MPI_INT,0,2,gridComm,&status);
-                MPI_Recv(buffer_x,nnz,MPI_INT,0,3,gridComm,&status);
-
                 //malloc
                 int *mi = malloc(nnz * sizeof(*mi));
                 int *mj = malloc(nnz * sizeof(*mj));
@@ -373,17 +364,14 @@ void mpi_create_block(const struct sparsematrix_t *M, struct sparsematrix_t *m)
                 //check the allocation
                 if(mi == NULL || mj == NULL || mx == NULL)
                 {
-                    printf("Cannot allocate memory for sub block\n");
-                    MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+                    printf("Cannot allocate memory for sub block m\n");
+                    MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
                 }
 
-                //get values from buffers
-                for(long int k = 0; k <= nnz; k++)
-                {
-                    mi[k] = buffer_i[k];
-                    mj[k] = buffer_j[k]; 
-                    mx[k] = (u32) buffer_x[k];
-                }
+                //get the rest 
+                MPI_Recv(mi,nnz,MPI_INT,0,1,gridComm,&status);
+                MPI_Recv(mj,nnz,MPI_INT,0,2,gridComm,&status);
+                MPI_Recv(mx,nnz,MPI_INT,0,3,gridComm,&status);
 
                 //link to sub block m
                 m->nnz = nnz;
@@ -391,6 +379,94 @@ void mpi_create_block(const struct sparsematrix_t *M, struct sparsematrix_t *m)
                 m->j = mj;
                 m->x = mx;
             }
+        }
+    }
+}
+
+/* Alloc memory for the sub vector v and get its value */ 
+void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32* v, int n)
+{
+    MPI_Status status; //result of MPI_Recv call
+    int coord[2] = {0,0}; //to store the grid coord of the current process
+    int dest_rank; //destination rank in the grid
+
+    //get the slicing for the current coord
+    int dim = M->ncols;
+    int div = dim / dims[1];
+    int mod = dim % dims[1];
+
+    //interval for vector value corresponding to the position of the current process 
+    int low;
+    int high = 0;
+
+    // per grid column 
+    for(int j = 0; j < dims[1]; j++)
+    {
+        coord[1] = j; //only the first row each time
+        MPI_Cart_rank(gridComm,coord,&dest_rank); //get the rank of the corresponding process
+
+        //compute the size of the corresponding sub block
+        int N = (j == 0) ? div + mod : div;
+        int size = n * N;
+
+        //process 0 computes the correct value and sends it
+        if(myGridRank == 0)
+        {
+            //set the correct interval corresponding to the current process 
+            low = (j == 0) ? 0 : high + 1;
+            high = (j == dims[1] - 1) ? dim * n : ((div + mod) + div * j) * n;
+
+            //set the buffer
+            u32 buffer[size];
+           
+            //select correct value
+            for(int k = low; k < high; k++)
+            {
+               buffer[k] = V[k];
+            }
+
+            //case 1 : current process is 0
+            if(dest_rank == 0)
+            {
+                //malloc
+                v = malloc(size * sizeof(v));
+               
+                //check the allocation
+                if(v == NULL)
+                {
+                    printf("Cannot allocate memory for sub block v\n");
+                    MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
+                }
+
+                //get values from buffer
+                for(int k = 0; k < size; k++)
+                {
+                    v[k] = buffer[k];
+                }
+            }
+
+            //case 2 : send all the value to dest_rank process
+            else
+            {
+                MPI_Send(buffer,size,MPI_INT,dest_rank,0,gridComm);
+            }
+        }
+
+        //process dest_rank receiving values from process 0
+        else if(dest_rank == myGridRank)
+        {
+            //malloc
+            v = malloc(size * sizeof(v));
+            
+            //check the allocation
+            if(v == NULL)
+            {
+                printf("Cannot allocate memory for sub block v\n");
+                MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
+            }
+            
+            //get the value
+            MPI_Recv(v,size,MPI_INT,0,0,gridComm,&status);
         }
     }
 }
@@ -417,10 +493,15 @@ int main()
     struct sparsematrix_t m; //sub block of the matrix M
 
     mpi_init(&M,&m);
-    mpi_get_matrix_size(&M,"./TF10.mtx");
-    mpi_create_block(&M,&m);
+    mpi_get_matrix_size(&M,"./Trec5.mtx");
+    mpi_create_matrix_block(&M,&m);
 
     printf("Rank in grid : %d, nnz : %ld, nrows : %d, ncols : %d\n",myGridRank,m.nnz,m.nrows,m.ncols);
+
+    for(long i = 0; i < m.nnz; i++)
+    {
+        printf("Rank in grid : %d, i : %d, j : %d, x : %d\n",myGridRank,m.i[i],m.j[i],m.x[i]);
+    }
 
     mpi_free_matrices(&M,&m);
     
