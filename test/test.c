@@ -566,42 +566,6 @@ void mpi_matrix_vector_product(const struct sparsematrix_t *M, const struct spar
             MPI_Gatherv(y,size,MPI_INT,NULL,NULL,NULL,MPI_INT,0,colComm);
         }
     }
-
-    if(myGridRank == 0)
-        for(long i = 0; i < SIZE; i++)
-        {
-            printf("Rank %d, y[%ld] = %d\n",myGridRank,i,Y[i]);
-        }
-}
-
-void sparse_matrix_vector_product(struct sparsematrix_t const * M, u32 const * x, bool transpose, int n)
-{
-        long nnz = M->nnz;
-        int nrows = transpose ? M->ncols : M->nrows;
-        int const * Mi = M->i;
-        int const * Mj = M->j;
-        u32 const * Mx = M->x;
-        u32 y[nrows * n];
-        
-        for (long i = 0; i < nrows * n; i++)
-                y[i] = 0;
-                
-        for (long k = 0; k < nnz; k++) {
-                int i = transpose ? Mj[k] : Mi[k];
-                int j = transpose ? Mi[k] : Mj[k];
-                u64 v = Mx[k];
-                for (int l = 0; l < n; l++) {
-                        u64 a = y[i * n + l];
-                        u64 b = x[j * n + l];
-                        y[i * n + l] = (a + v * b) % prime;
-                }
-        }
-
-        if(myGridRank == 0)
-        for(long i = 0; i < nrows * n; i++)
-        {
-            printf("y[%ld] = %d\n",i,y[i]);
-        }
 }
 
 /* Free used memory */
@@ -639,12 +603,9 @@ int main()
     }
 
     mpi_create_vector_block(&M,V,&v,n);
-    mpi_matrix_vector_product(&M,&m,v,n,false);
-    sparse_matrix_vector_product(&M,V,false,n);
+    mpi_matrix_vector_product(&M,&m,v,n,true);
     mpi_free_matrices(&M,&m);
-    
     MPI_Finalize();
-
 
     return 0;
 }

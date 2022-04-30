@@ -633,6 +633,11 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
                 sparse_matrix_vector_product(tmp, M, v, !transpose);
                 sparse_matrix_vector_product(Av, M, tmp, transpose);
 
+                for (long i = 0; i < block_size_pad; i++)
+                {
+                        printf("Av[i] = %d\n",Av[i]);
+                }
+
                 u32 vtAv[n * n];
                 u32 vtAAv[n * n];
                 block_dot_products(vtAv, vtAAv, nrows, Av, v);
