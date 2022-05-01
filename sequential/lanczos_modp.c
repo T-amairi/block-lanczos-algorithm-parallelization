@@ -48,6 +48,7 @@ double start;
 double last_print;
 bool ETA_flag;
 int expected_iterations;
+bool toprint = false;
 
 /******************* sparse matrix data structure **************/
 
@@ -444,8 +445,14 @@ void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 cons
         for (int i = 0; i < n * n; i++)
                 vtAv[i] = 0;
         for (int i = 0; i < N; i += n)
+        {
+                if(!toprint)
+                        printf("i = %d\n",i);
                 matmul_CpAtB(vtAv, &v[i*n], &Av[i*n]);
-        
+        }
+
+        toprint = true;
+                
         for (int i = 0; i < n * n; i++)
                 vtAAv[i] = 0;
         for (int i = 0; i < N; i += n)
