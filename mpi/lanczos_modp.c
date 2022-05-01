@@ -734,26 +734,38 @@ void mpi_create_matrix_block(const struct sparsematrix_t *M, struct sparsematrix
 }
 
 /* Alloc memory for the sub vector v and get its value */ 
-void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32** v, int n)
+void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32** v, int n, bool transpose)
 {
     MPI_Status status; //result of MPI_Recv call
     int coord[2] = {0,0}; //to store the grid coord of the current process
     int dest_rank; //destination rank in the grid
 
     //get the slicing for the current coord
-    int dim = M->ncols;
-    int div = dim / dims[1];
-    int mod = dim % dims[1];
+    int dim = (transpose) ? M->nrows : M->ncols;
+    int gridDim = (transpose) ? dims[0] : dims[1];
+    int div = dim / gridDim;
+    int mod = dim % gridDim;
 
     //interval for vector value corresponding to the position of the current process 
     int low;
     int high = 0;
 
-    /* per grid column */ 
-    for(int j = 0; j < dims[1]; j++)
+    /* per grid column or row if transpose == true */ 
+    for(int j = 0; j < gridDim; j++)
     {
-        coord[1] = j; //only the first row each time
-        MPI_Cart_rank(gridComm,coord,&dest_rank); //get the rank of the corresponding process
+        //set according to transpose the correct coord 
+        if(transpose)
+        {
+            coord[0] = j;
+        }
+
+        else
+        {
+            coord[1] = j; 
+        }
+        
+        //get the rank of the corresponding process
+        MPI_Cart_rank(gridComm,coord,&dest_rank); 
 
         //compute the size of the corresponding sub block
         int N = (j == 0) ? div + mod : div;
@@ -764,7 +776,7 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32**
         {
             //set the correct interval corresponding to the current process 
             low = (j == 0) ? 0 : high;
-            high = (j == dims[1] - 1) ? dim * n : ((div + mod) + div * j) * n;
+            high = (j == gridDim - 1) ? dim * n : ((div + mod) + div * j) * n;
 
             //set the buffer
             int buffer[size];
@@ -819,8 +831,11 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32**
             MPI_Recv(*v,size,MPI_INT,0,0,gridComm,&status);
         }
 
-        /* broadcast to all process in the same column */
-        if(myGridCoord[1] == j)
+        //set the condition to broadcast according to transpose
+        bool condition = (transpose) ? myGridCoord[0] == j : myGridCoord[1] == j; 
+
+        /* broadcast to all process in the same row if transpose == true or column otherwise */
+        if(condition)
         {
             //first the receiving processes alloc memory for the sub block v
             if(myGridRank != dest_rank)
@@ -837,7 +852,7 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32**
             }
 
             //and then, broadcast v 
-            MPI_Bcast(*v,size,MPI_INT,0,colComm);
+            (transpose) ? MPI_Bcast(*v,size,MPI_INT,0,rowComm) : MPI_Bcast(*v,size,MPI_INT,0,colComm);
         }
     }
 }
@@ -879,26 +894,30 @@ void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u3
         }
     }
 
-	//sum by row (each process at the first column of the grid will get the sum)
-    MPI_Reduce(tmp,y,size,MPI_INT,MPI_SUM,0,rowComm);
+	//sum by row/column (each process at the first column/row of the grid will get the sum)
+    (transpose) ? MPI_Reduce(tmp,y,size,MPI_INT,MPI_SUM,0,colComm) : MPI_Reduce(tmp,y,size,MPI_INT,MPI_SUM,0,rowComm);
 
-	//gather all the values by the first column
-    if(myGridCoord[1] == 0)
+    //set the condition to gather according to transpose
+    bool condition = (transpose) ? myGridCoord[0] == 0 : myGridCoord[1] == 0;
+
+	//gather all the values by the first column/row
+    if(condition)
     {
-		int counts[dims[1]]; //number of points for each process
-		int disps[dims[1]]; //the displacement of these points in the array Y
+        int gridDim = (transpose) ? dims[0] : dims[1]; //get the correct dimension
+		int counts[gridDim]; //number of points for each process
+		int disps[gridDim]; //the displacement of these points in the array Y
 
-		//get the counts from the other process in the same column
-		MPI_Gather(&size,1,MPI_INT,counts,1,MPI_INT,0,colComm);
+		//get the counts from the other process in the same column/row
+		(transpose) ? MPI_Gather(&size,1,MPI_INT,counts,1,MPI_INT,0,rowComm) : MPI_Gather(&size,1,MPI_INT,counts,1,MPI_INT,0,colComm);
 
 		//compute the displacement based on the counts
-		for(int i = 0; i < dims[1]; i++)
+		for(int i = 0; i < gridDim; i++)
 		{
 			disps[i] = (i > 0) ? (disps[i-1] + counts[i-1]) : 0;
 		}
 
 		//gather all the data in Y 
-		MPI_Gatherv(y,size,MPI_INT,Y,counts,disps,MPI_INT,0,colComm);
+		(transpose) ? MPI_Gatherv(y,size,MPI_INT,Y,counts,disps,MPI_INT,0,rowComm) : MPI_Gatherv(y,size,MPI_INT,Y,counts,disps,MPI_INT,0,colComm);
     }
 }
 
@@ -1075,13 +1094,7 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 	u32 *Av = NULL;
 	u32 *p = NULL;
 
-	nrows = transpose ? M->ncols : M->nrows;
-	ncols = transpose ? M->nrows : M->ncols;
-	block_size = nrows * n;
-	long Npad = ((nrows + n - 1) / n) * n;
-	long Mpad = ((ncols + n - 1) / n) * n;
-	long block_size_pad = (Npad > Mpad ? Npad : Mpad) * n;
-	
+	//process 0 initiates the algorithm  	
 	if(myGridRank == 0)
 	{
 		printf("Block Lanczos\n");
@@ -1103,7 +1116,7 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 
 		if (v == NULL || tmp == NULL || Av == NULL || p == NULL)
 		{
-			printf("impossible d'allouer les blocs de vecteur\n");
+		    printf("impossible d'allouer les blocs de vecteur\n");
             MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
 		}
 		
@@ -1138,48 +1151,45 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 
 	while(true)
 	{
+		//only the process 0 handles the execution and when it stops
 		if(myGridRank == 0 && stop_after > 0 && n_iterations == stop_after)
 			stop = true;
 
+		//warn all the processes to if we have finished
 		MPI_Bcast(&stop,1,MPI_INT,0,gridComm);
     				
 		if (stop)
 			break;
 
-		if(myGridRank == 0) 
-			sparse_matrix_vector_product(tmp, M, v, !transpose);
+		//parallel matrix-vector multiplication (u <- Mt * v)
+		mpi_create_vector_block(M,v,&sub_v,n,!transpose);
+    	mpi_matrix_vector_product(tmp,m,sub_v,n,!transpose);
 
-		//mpi_create_vector_block(M,v,&sub_v,n);
-    	//mpi_matrix_vector_product(tmp,m,sub_v,n,!transpose);
-
+		//free sub_v for the next multiplication
 		if(sub_v != NULL)
 		{
 			free(sub_v);
 			sub_v = NULL;
 		}
 
-		mpi_create_vector_block(M,tmp,&sub_v,n);
+		//parallel matrix-vector multiplication (v <- M * u)
+		mpi_create_vector_block(M,tmp,&sub_v,n,transpose);
     	mpi_matrix_vector_product(Av,m,sub_v,n,transpose);
 
+		//free sub_v for the next iteration
 		if(sub_v != NULL)
 		{
 			free(sub_v);
 			sub_v = NULL;
 		}
 
-		if(myGridRank == 0)
-		{
-			for (long i = 0; i < block_size_pad; i++)
-			{
-				//printf("tmp[i] = %d\n",Av[i]);
-			}
-		}
-
+		//n * n products
 		u32 vtAv[n * n];
 		u32 vtAAv[n * n];
 		u32 winv[n * n];
 		u32 d[n];
 
+		//process 0 computes n * n products 
 		if(myGridRank == 0)
 		{
 			block_dot_products(vtAv, vtAAv, nrows, Av, v);
@@ -1189,11 +1199,13 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 			correctness_tests(vtAv, vtAAv, winv, d);
 		}
 
+		//warn all the processes to if we have finished
 		MPI_Bcast(&stop,1,MPI_INT,0,gridComm);
     				
 		if (stop)
 			break;
 
+		//process 0 prepares the next iteration
 		if(myGridRank == 0)
 		{
 			orthogonalize(v, tmp, p, d, vtAv, vtAAv, winv, nrows, Av);
@@ -1206,10 +1218,10 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 		}
 	}
 
-	printf("\n");
-
+	//process 0 prints out the execution time and result
 	if(myGridRank == 0)
 	{
+		printf("\n");
 		if (stop_after < 0)
 			final_check(nrows, ncols, v, tmp);
 		printf("  - Terminated in %.1fs after %d iterations\n", wtime() - start, n_iterations);
@@ -1243,27 +1255,34 @@ void save_vector_block(char const * filename, int nrows, int ncols, u32 const * 
 int main(int argc, char ** argv)
 {
 	struct sparsematrix_t M; //matrix loaded from the file
-    struct sparsematrix_t m; //sub block of the matrix M
+	struct sparsematrix_t m; //sub block of the matrix M
 
-	mpi_init(&M,&m);
+	//init MPI 
+	mpi_init(&M,&m); 
 
-	process_command_line_options(argc, argv);
+	//get arg from command line
+	process_command_line_options(argc, argv); 
 
+	//prepare sub blocks m
 	mpi_get_matrix_size(&M,matrix_filename);
-    mpi_create_matrix_block(&M,&m);
+	mpi_create_matrix_block(&M,&m);
+
+	//all processes solve the problem
 	u32 *kernel = block_lanczos(&M, &m, n, right_kernel);
-	
+
+	//process 0 clean up
 	if(myGridRank == 0)
 	{
 		if (kernel_filename)
-			save_vector_block(kernel_filename, right_kernel ? M.ncols : M.nrows, n, kernel);
+				save_vector_block(kernel_filename, right_kernel ? M.ncols : M.nrows, n, kernel);
 		else
-			printf("Not saving result (no --output given)\n");
+				printf("Not saving result (no --output given)\n");
 		free(kernel);
 	}
 
+	//processes clean up
 	mpi_free_matrices(&M,&m);
 	MPI_Finalize();
-	
+
 	exit(EXIT_SUCCESS);
 }
