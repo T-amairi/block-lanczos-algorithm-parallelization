@@ -296,27 +296,65 @@ void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 
 /* C += A*B   for n x n matrices */
 void matmul_CpAB(u32 * C, u32 const * A, u32 const * B)
 {
-        for (int i = 0; i < n; i++)
-                for (int j = 0; j < n; j++)
-                        for (int k = 0; k < n; k++) {
-                                u64 x = C[i * n + j];
-                                u64 y = A[i * n + k];
-                                u64 z = B[k * n + j];
-                                C[i * n + j] = (x + y * z) % prime;
-                        }
+	u32 Bt[n * n];
+
+	for(int i = 0; i < n; i++)
+    {
+        for(int j = 0; j < n; j++)
+        {
+            Bt[j + i*n] = B[i + j*n];
+        }
+    }
+    
+	for (int i = 0; i < n; i++)
+	{
+		for (int j = 0; j < n; j++)
+		{
+			u64 x = C[i * n + j];
+			
+			for (int k = 0; k < n; k++)
+			{	
+				u64 y = A[i * n + k];
+				u64 z = Bt[j * n + k];
+				x += y * z;
+			}
+
+			C[i * n + j] = x % prime;
+		}
+	}
 }
 
 /* C += transpose(A)*B   for n x n matrices */
 void matmul_CpAtB(u32 * C, u32 const * A, u32 const * B)
 {
-        for (int i = 0; i < n; i++)
-                for (int j = 0; j < n; j++)
-                        for (int k = 0; k < n; k++) {
-                                u64 x = C[i * n + j];
-                                u64 y = A[k * n + i];
-                                u64 z = B[k * n + j];
-                                C[i * n + j] = (x + y * z) % prime;
-                        }
+	u32 At[n * n];
+	u32 Bt[n * n];
+
+	for(int i = 0; i < n; i++)
+    {
+        for(int j = 0; j < n; j++)
+        {
+            At[j + i*n] = A[i + j*n];
+			Bt[j + i*n] = B[i + j*n];
+        }
+    }
+
+	for (int i = 0; i < n; i++)
+	{
+		for (int j = 0; j < n; j++)
+		{
+			u64 x = C[i * n + j];
+
+			for (int k = 0; k < n; k++)
+			{
+				u64 y = At[i * n + k];
+				u64 z = Bt[j * n + k];
+				x += y * z;
+			}
+
+			C[i * n + j] = x % prime;
+		}
+	}	
 }
 
 /* return a^(-1) mod b */

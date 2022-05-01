@@ -1371,3 +1371,68 @@ int main(int argc, char ** argv)
 
 	exit(EXIT_SUCCESS);
 }
+
+
+
+
+
+//set some variables
+    long nnz = m->nnz;
+    int nrows = transpose ? m->ncols : m->nrows;
+    int size = nrows * n;
+    
+    int const * mi = m->i;
+    int const * mj = m->j;
+    u32 const * mx = m->x;
+
+    u32 y[size];
+    
+	//prepare the array before computing
+    for(long i = 0; i < size; i++)
+    {
+        y[i] = 0;
+    }
+
+	//compute the partial product with m and v 
+    for(long k = 0; k < nnz; k++)
+    {
+        int i = transpose ? mj[k] : mi[k];
+        int j = transpose ? mi[k] : mj[k];
+        u64 x = mx[k];
+
+        for(int l = 0; l < n; l++)
+        {
+            u64 a = y[i * n + l];
+            u64 b = v[j * n + l];
+            y[i * n + l] = (a + x * b) % prime;
+        }
+    }
+
+	bool isRecv = (transpose) ? myGridCoord[0] == 0 : myGridCoord[1] == 0;
+
+	if(isRecv)
+	{
+		int dim = (transpose) ? dims[0] : dims[1];
+		u32 buffer[size];
+		MPI_Status status;
+
+		for(int j = 1; j < dim; j++)
+		{
+			MPI_Recv(buffer,size,MPI_INT,MPI_ANY_SOURCE,MPI_ANY_TAG,gridComm,&status);
+
+			for(int k = 0; k < size; k++)
+			{
+				y[k] = ((u64) y[k] + buffer[k]) % prime;
+			}
+		}
+	}
+
+	else
+	{
+		int coord[2] = {0,0};
+		if(transpose) coord[1] = myGridCoord[1];
+		else coord[0] = myGridCoord[0];
+		int recv_rank;
+		MPI_Cart_rank(gridComm,coord,&recv_rank); 
+		MPI_Send(y,size,MPI_INT,recv_rank,0,gridComm);
+	}
