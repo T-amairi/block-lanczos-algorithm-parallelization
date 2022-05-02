@@ -1075,13 +1075,11 @@ void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u3
     int const * mj = m->j;
     u32 const * mx = m->x;
 
-    u32 tmp[size];
     u32 y[size];
     
 	//prepare the arrays before computing
     for(long i = 0; i < size; i++)
     {
-        tmp[i] = 0;
         y[i] = 0;
     }
 
@@ -1094,15 +1092,53 @@ void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u3
 
         for(int l = 0; l < n; l++)
         {
-            u64 a = tmp[i * n + l];
+            u64 a = y[i * n + l];
             u64 b = v[j * n + l];
-            tmp[i * n + l] = (a + x * b) % prime;
+            y[i * n + l] = (a + x * b) % prime;
         }
     }
 
-	//sum by row/column (each process at the first column/row of the grid will get the sum)
-    (transpose) ? MPI_Reduce(tmp,y,size,MPI_INT,MPI_SUM,0,colComm) : MPI_Reduce(tmp,y,size,MPI_INT,MPI_SUM,0,rowComm);
+	//sum by row or by column according to transpose
+	bool col_or_row = (transpose) ? (myGridCoord[0] == 0) : (myGridCoord[1] == 0);
 
+	//if a process is on the first row / column, he will get the results 
+	//here, we are not using MPI_Reduce to avoid overflow caused by the modulus reduction
+	if(col_or_row)
+	{
+		//get the correct dimension of the grid according to transpose
+		int dim = (transpose) ? dims[0] : dims[1];
+
+		//for each process in the same row / colum 
+		for(int i = 1; i < dim; i++)
+		{	
+			//receive the results
+			int buffer[size];
+			MPI_Status status;
+			MPI_Recv(buffer,size,MPI_INT,MPI_ANY_SOURCE,0,gridComm,&status);
+
+			//sum mod p
+			for(int j = 0; j < size; j++)
+			{
+				y[j] = ((u64) y[j] + buffer[j]) % prime;
+			}
+		} 
+	} 
+
+	//otherwise, the process will send the results
+	else
+	{	
+		//get the correct rank of the receiver 
+		int dest_coord[2] = {0,0};
+		int dest_rank;
+
+		if(transpose) dest_coord[1] = myGridCoord[1];
+		else dest_coord[0] = myGridCoord[0];
+		MPI_Cart_rank(gridComm,dest_coord,&dest_rank);
+
+		//send
+		MPI_Send(y,size,MPI_INT,dest_rank,0,gridComm);
+	}
+	
     //set the condition to gather according to transpose
     bool condition = (transpose) ? myGridCoord[0] == 0 : myGridCoord[1] == 0;
 
@@ -1326,59 +1362,6 @@ void mpi_free_matrices(struct sparsematrix_t *M, struct sparsematrix_t *m)
 
 /*************************** block-Lanczos algorithm ************************/
 
-/* Computes vtAv <-- transpose(v) * Av, vtAAv <-- transpose(Av) * Av */
-void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 const * v)
-{
-        for (int i = 0; i < n * n; i++)
-                vtAv[i] = 0;
-        for (int i = 0; i < N; i += n)
-            matmul_CpAtB(vtAv, &v[i*n], &Av[i*n]);
-                
-        for (int i = 0; i < n * n; i++)
-                vtAAv[i] = 0;
-        for (int i = 0; i < N; i += n)
-                matmul_CpAtB(vtAAv, &Av[i*n], &Av[i*n]);
-}
-
-/* Compute the next values of v (in tmp) and p */
-void orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const u32 *vtAAv, 
-        u32 const * winv, int N, u32 const * Av)
-{
-        /* compute the n x n matrix c */
-        u32 c[n * n];
-        u32 spliced[n * n];
-        for (int i = 0; i < n; i++)
-                for (int j = 0; j < n; j++) {
-                        spliced[i*n + j] = d[j] ? vtAAv[i * n + j] : vtAv[i * n + j];
-                        c[i * n + j] = 0;
-                }
-        matmul_CpAB(c, winv, spliced);
-        for (int i = 0; i < n; i++)
-                for (int j = 0; j < n; j++)
-                        c[i * n + j] = prime - c[i * n + j];
-
-        u32 vtAvd[n * n];
-        for (int i = 0; i < n; i++)
-                for (int j = 0; j < n; j++)
-                        vtAvd[i*n + j] = d[j] ? prime - vtAv[i * n + j] : 0;
-
-        /* compute the next value of v ; store it in tmp */        
-        for (long i = 0; i < N; i++)
-                for (long j = 0; j < n; j++)
-                        tmp[i*n + j] = d[j] ? Av[i*n + j] : v[i * n + j];
-        for (long i = 0; i < N; i += n)
-                matmul_CpAB(&tmp[i*n], &v[i*n], c);
-        for (long i = 0; i < N; i += n)
-                matmul_CpAB(&tmp[i*n], &p[i*n], vtAvd);
-        
-        /* compute the next value of p */
-        for (long i = 0; i < N; i++)
-                for (long j = 0; j < n; j++)
-                        p[i * n + j] = d[j] ? 0 : p[i * n + j];
-        for (long i = 0; i < N; i += n)
-                matmul_CpAB(&p[i*n], &v[i*n], winv);
-}
-
 void verbosity()
 {
         n_iterations += 1;
@@ -1540,7 +1523,7 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 		if(myGridRank == 0 && stop_after > 0 && n_iterations == stop_after)
 			stop = true;
 
-		//warn all the processes to if we have finished
+		//warn all the processes if we have finished
 		MPI_Bcast(&stop,1,MPI_INT,0,gridComm);
     				
 		if (stop)
@@ -1584,13 +1567,12 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 		//process 0 computes 
 		if(myGridRank == 0)
 		{
-			//block_dot_products(vtAv, vtAAv, nrows, Av, v);
 			stop = (semi_inverse(vtAv, winv, d) == 0);
 			/* check that everything is working ; disable in production */
 			correctness_tests(vtAv, vtAAv, winv, d);
 		}
 
-		//warn all the processes to if we have finished
+		//warn all the processes if we have finished
 		MPI_Bcast(&stop,1,MPI_INT,0,gridComm);
     				
 		if (stop)
@@ -1605,13 +1587,11 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 		MPI_Bcast(d,n,MPI_INT,0,gridComm);
 
 		//parallel orthogonalization
-		//mpi_orthogonalize(v, tmp, p, d, vtAv, vtAAv, winv, nrows, Av, block_size_pad);
+		mpi_orthogonalize(v, tmp, p, d, vtAv, vtAAv, winv, nrows, Av, block_size_pad);
 
 		//process 0 prepares the next iteration
 		if(myGridRank == 0)
 		{
-			orthogonalize(v, tmp, p, d, vtAv, vtAAv, winv, nrows, Av);
-
 			/* the next value of v is in tmp ; copy */
 			for (long i = 0; i < block_size; i++)
 				v[i] = tmp[i];
@@ -1656,7 +1636,7 @@ void save_vector_block(char const * filename, int nrows, int ncols, u32 const * 
 
 int main(int argc, char ** argv)
 {
-	bool isChallengeMatrix = false; //set the type of input matrix
+	bool isChallengeMatrix = true; //set the type of input matrix
 	struct sparsematrix_t M; //matrix loaded from the file
 	struct sparsematrix_t m; //sub block of the matrix M
 
