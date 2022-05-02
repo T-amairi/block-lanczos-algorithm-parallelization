@@ -311,7 +311,7 @@ void matmul_CpAB(u32 * C, u32 const * A, u32 const * B)
 		for (int j = 0; j < n; j++)
 		{
 			u64 x = C[i * n + j];
-			
+
 			for (int k = 0; k < n; k++)
 			{	
 				u64 y = A[i * n + k];
@@ -602,7 +602,7 @@ void mpi_get_block_size(const struct sparsematrix_t *M, struct sparsematrix_t *m
     } 
 }
 
-/* Alloc memory for the sub block m and get its value */
+/* Alloc memory for the sub block m and get its value (TF matrix version i.e set by column) */
 void mpi_create_matrix_block(const struct sparsematrix_t *M, struct sparsematrix_t *m)
 {
     mpi_get_block_size(M,m); //get sub block size
@@ -693,6 +693,175 @@ void mpi_create_matrix_block(const struct sparsematrix_t *M, struct sparsematrix
                         //shift the coord of each point x
                         buffer_i[nnz] = (i == 0) ? M->i[k] : M->i[k] - low;
                         buffer_j[nnz] = (j == 0) ? M->j[k] : M->j[k] - (max_col - (div_y * j - 1));
+                        buffer_x[nnz] = M->x[k];
+                        nnz++; 
+                    }
+                }
+
+                //case 1 : current process is 0
+                if(dest_rank == myGridRank && nnz != 0)
+                {
+                    //malloc
+                    int *mi = malloc(nnz * sizeof(*mi));
+                    int *mj = malloc(nnz * sizeof(*mj));
+                    u32 *mx = malloc(nnz * sizeof(*mx));
+
+                    //check the allocation
+                    if(mi == NULL || mj == NULL || mx == NULL)
+                    {
+                        printf("Cannot allocate memory for sub block m\n");
+                        MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
+                    }
+
+                    //get values from buffers
+                    for(long int k = 0; k <= nnz; k++)
+                    {
+                        mi[k] = buffer_i[k];
+                        mj[k] = buffer_j[k]; 
+                        mx[k] = buffer_x[k];
+                    }
+
+                    //link to sub block m
+                    m->nnz = nnz;
+                    m->i = mi;
+                    m->j = mj;
+                    m->x = mx;
+                }
+
+                //case 2 : send all the values to dest_rank process
+                else
+                {
+                    MPI_Send(&nnz,1,MPI_LONG,dest_rank,0,gridComm);
+                    MPI_Send(buffer_i,nnz,MPI_INT,dest_rank,1,gridComm);
+                    MPI_Send(buffer_j,nnz,MPI_INT,dest_rank,2,gridComm);
+                    MPI_Send(buffer_x,nnz,MPI_INT,dest_rank,3,gridComm);
+                }
+            }
+
+            //process dest_rank receiving values from process 0
+            else if(dest_rank == myGridRank)
+            {
+                //get first nnz 
+                MPI_Recv(&nnz,1,MPI_LONG,0,0,gridComm,&status);
+
+                //malloc
+                int *mi = malloc(nnz * sizeof(*mi));
+                int *mj = malloc(nnz * sizeof(*mj));
+                u32 *mx = malloc(nnz * sizeof(*mx));
+
+                //check the allocation
+                if(mi == NULL || mj == NULL || mx == NULL)
+                {
+                    printf("Cannot allocate memory for sub block m\n");
+                    MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
+                }
+
+                //get the rest 
+                MPI_Recv(mi,nnz,MPI_INT,0,1,gridComm,&status);
+                MPI_Recv(mj,nnz,MPI_INT,0,2,gridComm,&status);
+                MPI_Recv(mx,nnz,MPI_INT,0,3,gridComm,&status);
+
+                //link to sub block m
+                m->nnz = nnz;
+                m->i = mi;
+                m->j = mj;
+                m->x = mx;
+            }
+        }
+    }
+}
+
+/* Alloc memory for the sub block m and get its value (challenge matrix version i.e set by row) */
+void mpi_create_matrix_challenge_block(const struct sparsematrix_t *M, struct sparsematrix_t *m)
+{
+    mpi_get_block_size(M,m); //get sub block size
+
+    int coord[2] = {0,0}; //to store the grid coord of the current process
+    int dest_rank; //destination rank in the grid
+    long int nnz; //number of non zero
+    MPI_Status status; //result of MPI_Recv call
+ 
+    //get the slicing for each coord
+    int div_x = M->nrows / dims[0];
+    int mod_x = M->nrows % dims[0];
+    int div_y = M->ncols / dims[1];
+    int mod_y = M->ncols % dims[1];
+
+    //max matrix row based on the current column of the grid
+    int max_row;
+
+    //keep in track the pointers distance
+    int low_p = 0;
+    int high_p = 0;
+
+    /* per grid row */ 
+    for(int i = 0; i < dims[0]; i++)
+    {
+        coord[0] = i; //save x coord 
+        max_row = (div_x + mod_x) + div_x * i - 1; //get max size of the matrix row based on the grid topology
+        
+        //process 0 gets values from matrix M based on the current grid row
+        if(myGridRank == 0)
+        {
+            low_p = (high_p != 0) ? high_p + 1 : high_p; //set the low distance pointer
+            
+            //case 1 : next iteration is not the end of the matrix M
+            if(i + 1 != dims[0])
+            {
+                //set the high distance pointer
+                for(int k = high_p; k < M->nnz; k++)
+                { 
+                    if(M->i[k] > max_row)
+                    {
+                        high_p = k - 1;
+                        break;
+                    }                
+                } 
+            }
+
+            //case 2 : the next iteration is the end of the matrix M
+            else
+            {
+                high_p = M->nnz - 1;
+            }
+        }
+
+        //interval for matrix column value corresponding to the grid column 
+        int low;
+        int high = 0;
+
+        /* per grid column */ 
+        for(int j = 0; j < dims[1]; j++)
+        {
+            coord[1] = j; //save y coord 
+            MPI_Cart_rank(gridComm,coord,&dest_rank); //get the rank of the corresponding process 
+
+            //process 0 computes the correct value and sends it
+            if(myGridRank == 0)
+            {
+                //get the correct interval for the current grid column
+                low = (high != 0) ? high + 1 : high;
+                high = (div_y + mod_y) + div_y * j - 1;
+
+                //compute the size of the corresponding sub block
+                int nrows = (i == 0) ? div_x + mod_x : div_x;
+                int ncols = (j == 0) ? div_y + mod_y : div_y;
+                int size = nrows * ncols;
+                
+                //set the buffers
+                int buffer_i[size];
+                int buffer_j[size];
+                int buffer_x[size]; 
+                nnz = 0;
+
+                //select correct value
+                for(int k = low_p; k <= high_p; k++)
+                {
+                    if(M->j[k] >= low && M->j[k] <= high)
+                    {   
+                        //shift the coord of each point
+                        buffer_i[nnz] = (i == 0) ? M->i[k] : M->i[k] - (max_row - (div_x * i - 1));
+                        buffer_j[nnz] = (j == 0) ? M->j[k] : M->j[k] - low;
                         buffer_x[nnz] = M->x[k];
                         nnz++; 
                     }
@@ -1292,6 +1461,7 @@ void save_vector_block(char const * filename, int nrows, int ncols, u32 const * 
 
 int main(int argc, char ** argv)
 {
+	bool isChallengeMatrix = true; //set the type of input matrix
 	struct sparsematrix_t M; //matrix loaded from the file
 	struct sparsematrix_t m; //sub block of the matrix M
 
@@ -1303,8 +1473,8 @@ int main(int argc, char ** argv)
 
 	//prepare sub blocks m
 	mpi_get_matrix_size(&M,matrix_filename);
-	mpi_create_matrix_block(&M,&m);
-
+	isChallengeMatrix ? mpi_create_matrix_challenge_block(&M,&m) : mpi_create_matrix_block(&M,&m); 
+	
 	//all processes solve the problem
 	u32 *kernel = block_lanczos(&M, &m, n, right_kernel);
 
