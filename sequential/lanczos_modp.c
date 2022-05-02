@@ -445,14 +445,7 @@ void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 cons
         for (int i = 0; i < n * n; i++)
                 vtAv[i] = 0;
         for (int i = 0; i < N; i += n)
-        {
-                if(!toprint)
-                        printf("i = %d\n",i);
-                matmul_CpAtB(vtAv, &v[i*n], &Av[i*n]);
-        }
-
-        toprint = true;
-                
+                matmul_CpAtB(vtAv, &v[i*n], &Av[i*n]);                
         for (int i = 0; i < n * n; i++)
                 vtAAv[i] = 0;
         for (int i = 0; i < N; i += n)
@@ -484,9 +477,9 @@ void orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const
         /* compute the next value of v ; store it in tmp */        
         for (long i = 0; i < N; i++)
                 for (long j = 0; j < n; j++)
-                        tmp[i*n + j] = d[j] ? Av[i*n + j] : v[i * n + j];
+                        tmp[i*n + j] = d[j] ? Av[i*n + j] : v[i * n + j];        
         for (long i = 0; i < N; i += n)
-                matmul_CpAB(&tmp[i*n], &v[i*n], c);
+                matmul_CpAB(&tmp[i*n], &v[i*n], c);	        
         for (long i = 0; i < N; i += n)
                 matmul_CpAB(&tmp[i*n], &p[i*n], vtAvd);
         
