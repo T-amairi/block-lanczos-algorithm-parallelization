@@ -31,7 +31,6 @@
 
 #include "mmio.h"
 
-//#include <mpi.h>
 #include <omp.h>
 
 typedef uint64_t u64;
