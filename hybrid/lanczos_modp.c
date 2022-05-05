@@ -33,8 +33,8 @@
 #include <mpi.h>
 #include <omp.h>
 
-typedef uint64_t u64;
-typedef uint32_t u32;
+typedef uint_fast64_t u64;
+typedef uint_fast32_t u32;
 
 /******************* global variables ********************/
 
@@ -284,7 +284,7 @@ void matmul_CpAB(u32 * C, u32 const * A, u32 const * B)
 		{
 			u64 x = C[i * n + j];
 
-            #pragma omp simd reduction(+:x)
+			#pragma omp simd reduction(+:x)
 			for (int k = 0; k < n; k++)
 			{	
 				u64 y = A[i * n + k];
@@ -318,7 +318,7 @@ void matmul_CpAtB(u32 * C, u32 const * A, u32 const * B)
 		{
 			u64 x = C[i * n + j];
 
-            #pragma omp simd reduction(+:x)
+			#pragma omp simd reduction(+:x)
 			for (int k = 0; k < n; k++)
 			{
 				u64 y = At[i * n + k];
@@ -1053,28 +1053,37 @@ void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u3
     u32 const * mx = m->x;
 
     u32 y[size];
-	
+	u64 cache[size];
+
 	#pragma omp parallel
 	{
 		#pragma omp for
 		for(long i = 0; i < size; i++)
 		{
 			y[i] = 0;
+			cache[i] = 0;
 		}
-	}
 
-	//#pragma omp for reduction(+:y[0:size])
-	for (long k = 0; k < nnz; k++) 
-	{
-		int i = transpose ? mj[k] : mi[k];
-		int j = transpose ? mi[k] : mj[k];
-		u64 x = mx[k];
-
-		for(int l = 0; l < n; l++)
+		#pragma omp for reduction(+:cache[0:size])
+		for (long k = 0; k < nnz; k++) 
 		{
-			u64 a = y[i * n + l];
-			u64 b = v[j * n + l];
-			y[i * n + l] = (a + x * b) % prime;
+			int i = transpose ? mj[k] : mi[k];
+        	int j = transpose ? mi[k] : mj[k];
+        	u64 x = mx[k];
+
+			for(int l = 0; l < n; l++)
+			{
+				u64 a = cache[i * n + l];
+				u64 b = v[j * n + l];
+				cache[i * n + l] = (a + x * b);
+			}
+		}
+
+		#pragma omp for
+		for(long i = 0; i < size; i++)
+		{
+			u64 a = y[i];
+			y[i] = (cache[i] + a) % prime;
 		}
 	}
 
@@ -1190,13 +1199,13 @@ void mpi_prepare_block_dot_products(u32 * Av, u32 * v, int N)
 /* Computes vtAv <-- transpose(v) * Av, vtAAv <-- transpose(Av) * Av */
 void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const * v)
 {
-	long size = n * n;
-	u32 cache1[size];
-	u32 cache2[size];
-
     //prepare variables
+	int n_n = n * n;
+	u32 cache1[n_n];
+	u32 cache2[n_n];
+
 	#pragma omp parallel for
-	for (long i = 0; i < size; i++)
+	for (int i = 0; i < n_n; i++)
 	{
 		vtAv[i] = 0;
 		vtAAv[i] = 0;
@@ -1204,24 +1213,25 @@ void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const *
 		cache2[i] = 0;
 	}
 
-	int loop_size = high_for - low_for;	
+	int size = high_for - low_for;
 
+	//each process computes a part of the n * n matrix product
 	#pragma omp parallel firstprivate(cache1,cache2)
 	{
 		#pragma omp for nowait
-		for (int i = 0; i <= loop_size; i++)
+		for (int i = 0; i <= size; i++)
 		{
-			matmul_CpAtB(vtAv,&v[i*size], &Av[i*size]);
-			matmul_CpAtB(vtAAv,&Av[i*size], &Av[i*size]);
+			matmul_CpAtB(cache1,&v[i*n_n], &Av[i*n_n]);
+			matmul_CpAtB(cache2,&Av[i*n_n], &Av[i*n_n]);
 		}
 
 		#pragma omp critical 
-		for (long i = 0; i < size; i++)
+		for (long i = 0; i < n_n; i++)
 		{
 			vtAv[i] = ((u64) vtAv[i] + cache1[i]) % prime;
 			vtAAv[i] = ((u64) vtAAv[i] + cache2[i]) % prime;
 		}
-	}	
+	}
 
 	//Each process sends its result to process 0
 	//here, we are not using MPI_Reduce to avoid overflow caused by the modulus reduction
@@ -1232,16 +1242,15 @@ void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const *
 		{
 			//prepare buffers
 			MPI_Status status;
-			u32 buffer_1[size];
-			u32 buffer_2[size];
+			u32 buffer_1[n_n];
+			u32 buffer_2[n_n];
 
 			//receive for each i process
-			MPI_Recv(buffer_1,size,MPI_INT,i,0,gridComm,&status);
-			MPI_Recv(buffer_2,size,MPI_INT,i,1,gridComm,&status);
+			MPI_Recv(buffer_1,n_n,MPI_INT,i,0,gridComm,&status);
+			MPI_Recv(buffer_2,n_n,MPI_INT,i,1,gridComm,&status);
 
 			//sum mod prime
-			#pragma omp parallel for
-			for(int j = 0; j < size; j++)
+			for(int j = 0; j < n_n; j++)
 			{
 				vtAv[j] = ((u64) vtAv[j] + buffer_1[j]) % prime;
 				vtAAv[j] = ((u64) vtAAv[j] + buffer_2[j]) % prime;
@@ -1251,8 +1260,8 @@ void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const *
 		//process i sends its results
 		if(myGridRank == i)
 		{
-			MPI_Send(vtAv,size,MPI_INT,0,0,gridComm);
-			MPI_Send(vtAAv,size,MPI_INT,0,1,gridComm);
+			MPI_Send(vtAv,n_n,MPI_INT,0,0,gridComm);
+			MPI_Send(vtAAv,n_n,MPI_INT,0,1,gridComm);
 		}
 	}
 }
@@ -1261,9 +1270,8 @@ void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const *
 void mpi_prepare_orthogonalize(u32 * vtAv, u32 * vtAAv, u32 * v, u32 * Av, u32 * p, int N)
 {
 	//first get vtAv & vtAAv
-	int n_n = n * n;
-	MPI_Bcast(vtAv,n_n,MPI_INT,0,gridComm);
-	MPI_Bcast(vtAAv,n_n,MPI_INT,0,gridComm);
+	MPI_Bcast(vtAv,n * n,MPI_INT,0,gridComm);
+	MPI_Bcast(vtAAv,n * n,MPI_INT,0,gridComm);
 
 	//variables
 	int interval = N / n;
@@ -1277,15 +1285,15 @@ void mpi_prepare_orthogonalize(u32 * vtAv, u32 * vtAAv, u32 * v, u32 * Av, u32 *
 		int high = div + mod + div * i - 1;
 		int low = (i == 0) ? 0 : high - div + 1;
 		if(i == np - 1) high = interval;
-		int size = (high - low + 1) * n_n;
+		int size = (high - low + 1) * n * n;
 
 		//process 0 sends the portions
 		if(myGridRank == 0)
 		{
 			//send to process i
-			MPI_Send(&v[low*n_n],size,MPI_INT,i,0,gridComm);
-			MPI_Send(&Av[low*n_n],size,MPI_INT,i,1,gridComm);
-			MPI_Send(&p[low*n_n],size,MPI_INT,i,2,gridComm);
+			MPI_Send(&v[low*n*n],size,MPI_INT,i,0,gridComm);
+			MPI_Send(&Av[low*n*n],size,MPI_INT,i,1,gridComm);
+			MPI_Send(&p[low*n*n],size,MPI_INT,i,2,gridComm);
 		}
 
 		//process i gets its portions
@@ -1339,12 +1347,13 @@ void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, c
 	//get intervals
 	int div = N / np;
 	int mod = N % np;
-	int size = ((myGridRank == 0) ? div + mod : div) + n * n;
+	int size = ((myGridRank == 0) ? div + mod : div) + n_n;
+	int loop_size = high_for - low_for;
 
 	#pragma omp parallel
 	{
-		/* each process prepares tmp */
-		#pragma omp for        
+		//each process prepares tmp
+		#pragma omp for          
 		for (long i = 0; i < size; i++)
 		{
 			for (long j = 0; j < n; j++)
@@ -1352,23 +1361,16 @@ void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, c
 				tmp[i*n + j] = d[j] ? Av[i*n + j] : v[i * n + j];
 			}
 		}
-
-		int loop_size = high_for - low_for;
-
+		
 		//each process computes a part of the n * n matrix product for tmp
-		#pragma omp for	
-		for (int i = 0; i <= loop_size; i++)
-		{
-			matmul_CpAB(&tmp[i*n_n], &v[i*n_n], c);
-		}
-
 		#pragma omp for
 		for (int i = 0; i <= loop_size; i++)
 		{
+			matmul_CpAB(&tmp[i*n_n], &v[i*n_n], c);
 			matmul_CpAB(&tmp[i*n_n], &p[i*n_n], vtAvd);
 		}
 
-		/* each process prepares p */
+		//each process prepares p
 		#pragma omp for
 		for (long i = 0; i < size; i++)
 		{
@@ -1377,16 +1379,15 @@ void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, c
 				p[i * n + j] = d[j] ? 0 : p[i * n + j];
 			}
 		}
-
+		
 		//each process computes a part of the n * n matrix product for p
-		#pragma omp for	
+		#pragma omp for
 		for (int i = 0; i <= loop_size; i++)
 		{
 			matmul_CpAB(&p[i*n_n], &v[i*n_n], winv);
 		}
-
 	}
-
+	
 	//intervals
 	int interval = N / n;
 	int div_recv = interval / np;
@@ -1536,7 +1537,6 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 	long Npad = ((nrows + n - 1) / n) * n;
 	long Mpad = ((ncols + n - 1) / n) * n;
 	long block_size_pad = (Npad > Mpad ? Npad : Mpad) * n;
-
 	u32 *v = NULL;
 	u32 *tmp = NULL;
 	u32 *Av = NULL;
