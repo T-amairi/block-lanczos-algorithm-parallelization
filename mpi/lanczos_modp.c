@@ -456,14 +456,16 @@ int semi_inverse(u32 const * M_, u32 * winv, u32 * d)
 int np; //total number of processes 
 int myRank; //rank in MPI_COMM_WORLD 
 int myGridRank; //rank in gridComm
-int myRowRank; //rank in rowComm
-int myColRank; //rank in colComm
 int myGridCoord[2]; //(x,y) coordinates in the grid topology
 int dims[2]; //dimensions of the virtual grid
 int notWrapping[2] = {0,0}; //flags to turn off wrapping in grid
 MPI_Comm gridComm; //grid communicator
 MPI_Comm rowComm; //row subset communicator
 MPI_Comm colComm; //column subset communicator
+
+//intervals for the loops in the n * n product functions
+int low_for;
+int high_for;
 
 /****************** MPI functions ******************/
 
@@ -493,12 +495,10 @@ void mpi_init(struct sparsematrix_t *M, struct sparsematrix_t *m)
 
     //generate row communicator based on the grid coordinates
     MPI_Comm_split(gridComm,myGridCoord[0],myGridCoord[1],&rowComm);
-    MPI_Comm_rank(rowComm,&myRowRank);
-
+    
     //generate column communicator based on the grid coordinates
     MPI_Comm_split(gridComm,myGridCoord[1],myGridCoord[0],&colComm);
-    MPI_Comm_rank(colComm,&myColRank);
-
+   
     //set matrices
     M->i = NULL;
     M->j = NULL;
@@ -917,7 +917,7 @@ void mpi_create_matrix_challenge_block(const struct sparsematrix_t *M, struct sp
 }
 
 /* Alloc memory for the sub vector v and get its value */ 
-void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32** v, int n, bool transpose)
+void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32** v, bool transpose)
 {
     MPI_Status status; //result of MPI_Recv call
     int coord[2] = {0,0}; //to store the grid coord of the current process
@@ -1037,7 +1037,7 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32**
 }
 
 /* Y += m*v or Y += transpose(m)*v, according to the transpose flag */ 
-void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u32* v, int n, bool transpose)
+void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u32* v, bool transpose)
 {
 	//set some variables
     long nnz = m->nnz;
@@ -1144,8 +1144,43 @@ void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u3
     }
 }
 
+/* Prepare the block dot products for each process */
+void mpi_prepare_block_dot_products(u32 * Av, u32 * v, int N)
+{
+	//variables
+	int interval = N / n;
+	int div = interval / np;
+	int mod = interval % np;
+	
+	//Each process gets its portion from process 0
+	for(int i = 1; i < np; i++)
+	{
+		//get intervals
+		int high = div + mod + div * i - 1;
+		int low = high - div + 1;
+		if(i == np - 1) high = interval;
+		int size = (high - low + 1) * n * n;
+
+		//process 0 sends the portions
+		if(myGridRank == 0)
+		{
+			//send to process i
+			MPI_Send(&v[low*n*n],size,MPI_INT,i,0,gridComm);
+			MPI_Send(&Av[low*n*n],size,MPI_INT,i,1,gridComm);
+		}
+
+		//process i gets its portions
+		if(myGridRank == i)
+		{
+			MPI_Status status;
+			MPI_Recv(v,size,MPI_INT,0,0,gridComm,&status);
+			MPI_Recv(Av,size,MPI_INT,0,1,gridComm,&status);
+		}
+	}
+}
+
 /* Computes vtAv <-- transpose(v) * Av, vtAAv <-- transpose(Av) * Av */
-void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 const * v)
+void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const * v)
 {
     //prepare variables
 	for (int i = 0; i < n * n; i++)
@@ -1154,16 +1189,9 @@ void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 
 		vtAAv[i] = 0;
 	}
 
-	//get intervals for each process
-	int interval = N / n;
-	int div = interval / np;
-	int mod = interval % np;
-	int high = div + mod + div * myGridRank - 1;
-	int low = (myGridRank == 0) ? 0 : high - div + 1;
-	if(myGridRank == np - 1) high = interval;
-	
-	//each process computes a part of the n * n matrix product 	
-	for (int i = low; i <= high; i++)
+	//each process computes a part of the n * n matrix product 
+	int size = high_for - low_for;	
+	for (int i = 0; i <= size; i++)
 	{
 		matmul_CpAtB(vtAv,&v[i*n*n], &Av[i*n*n]);
 		matmul_CpAtB(vtAAv,&Av[i*n*n], &Av[i*n*n]);
@@ -1202,8 +1230,49 @@ void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 
 	}
 }
 
+/* Prepare the orthogonalize step for each process  */
+void mpi_prepare_orthogonalize(u32 * vtAv, u32 * vtAAv, u32 * v, u32 * Av, u32 * p, int N)
+{
+	//first get vtAv & vtAAv
+	MPI_Bcast(vtAv,n * n,MPI_INT,0,gridComm);
+	MPI_Bcast(vtAAv,n * n,MPI_INT,0,gridComm);
+
+	//variables
+	int interval = N / n;
+	int div = interval / np;
+	int mod = interval % np;
+	
+	//Each process gets its portion from process 0
+	for(int i = 1; i < np; i++)
+	{
+		//get intervals
+		int high = div + mod + div * i - 1;
+		int low = (i == 0) ? 0 : high - div + 1;
+		if(i == np - 1) high = interval;
+		int size = (high - low + 1) * n * n;
+
+		//process 0 sends the portions
+		if(myGridRank == 0)
+		{
+			//send to process i
+			MPI_Send(&v[low*n*n],size,MPI_INT,i,0,gridComm);
+			MPI_Send(&Av[low*n*n],size,MPI_INT,i,1,gridComm);
+			MPI_Send(&p[low*n*n],size,MPI_INT,i,2,gridComm);
+		}
+
+		//process i gets its portions
+		if(myGridRank == i)
+		{
+			MPI_Status status;
+			MPI_Recv(v,size,MPI_INT,0,0,gridComm,&status);
+			MPI_Recv(Av,size,MPI_INT,0,1,gridComm,&status);
+			MPI_Recv(p,size,MPI_INT,0,2,gridComm,&status);
+		}
+	}
+}
+
 /* Compute the next values of v (in tmp) and p */
-void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const u32 *vtAAv, u32 const * winv, int N, u32 const * Av, long block_size_pad)
+void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const u32 *vtAAv, u32 const * winv, int N, u32 const * Av)
 {
 	/* each process computes the n x n matrix c */
 	u32 c[n * n];
@@ -1237,9 +1306,14 @@ void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, c
 			vtAvd[i*n + j] = d[j] ? prime - vtAv[i * n + j] : 0;
 		}
 	}
-			
+
+	//get intervals
+	int div = N / np;
+	int mod = N % np;
+	int size = ((myGridRank == 0) ? div + mod : div) + n * n;
+	
 	/* each process prepares tmp */        
-	for (long i = 0; i < N; i++)
+	for (long i = 0; i < size; i++)
 	{
 		for (long j = 0; j < n; j++)
 		{
@@ -1247,27 +1321,16 @@ void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, c
 		}
 	}
 
-	//get intervals for each process
-	int interval = N / n;
-	int div = interval / np;
-	int mod = interval % np;
-	int high = div + mod + div * myGridRank - 1;
-	int low = (myGridRank == 0) ? 0 : high - div + 1;
-	if(myGridRank == np - 1) high = interval;
-	
-	//each process computes a part of the n * n matrix product for tmp	
-	for (int i = low; i <= high; i++)
+	//each process computes a part of the n * n matrix product for tmp
+	int loop_size = high_for - low_for;	
+	for (int i = 0; i <= loop_size; i++)
 	{
 		matmul_CpAB(&tmp[i*n*n], &v[i*n*n], c);
-	}
-	
-	for (int i = low; i <= high; i++)
-	{
 		matmul_CpAB(&tmp[i*n*n], &p[i*n*n], vtAvd);
 	}
 
 	/* each process prepares p */
-	for (long i = 0; i < N; i++)
+	for (long i = 0; i < size; i++)
 	{
 		for (long j = 0; j < n; j++)
 		{
@@ -1276,52 +1339,40 @@ void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, c
 	}
 
 	//each process computes a part of the n * n matrix product for p	
-	for (int i = low; i <= high; i++)
+	for (int i = 0; i <= loop_size; i++)
 	{
 		matmul_CpAB(&p[i*n*n], &v[i*n*n], winv);
 	}
 
+	//intervals
+	int interval = N / n;
+	int div_recv = interval / np;
+	int mod_recv = interval % np;
+
 	//Each process sends its result to process 0
-	//here, we are not using MPI_Reduce to avoid overflow caused by the modulus reduction
 	for(int i = 1; i < np; i++)
 	{
-		//process 0 gets the result and makes the sum
+		//get intervals
+		int high = div_recv + mod_recv + div_recv * i - 1;
+		int low = high - div_recv + 1;
+		if(i == np - 1) high = interval;
+		int size = (high - low + 1) * n * n;
+
+		//process 0 gets the result
 		if(myGridRank == 0)
 		{
-			//prepare buffers
 			MPI_Status status;
-			u32 buffer_1[block_size_pad];
-			u32 buffer_2[block_size_pad];
-
-			//receive for each i process
-			MPI_Recv(buffer_1,block_size_pad,MPI_INT,i,0,gridComm,&status);
-			MPI_Recv(buffer_2,block_size_pad,MPI_INT,i,1,gridComm,&status);
-
-			//prepare intervals
-			high = div + mod + div * i - 1;
-			low = high - div + 1;
-			if(i == np - 1) high = interval;
-
-			//sum mod prime
-			for (int j = low; j <= high; j++)
-			{
-				int start = j*n*n;
-
-				for(int k = 0; k < n * n; k++)
-				{
-					tmp[start + k] = buffer_1[start + k];
-					p[start + k] = buffer_2[start + k];
-				}
-			}	
+			MPI_Recv(&tmp[low*n*n],size,MPI_INT,i,0,gridComm,&status);
+			MPI_Recv(&p[low*n*n],size,MPI_INT,i,1,gridComm,&status);
 		}
 
 		//process i sends its results
 		if(myGridRank == i)
 		{
-			MPI_Send(tmp,block_size_pad,MPI_INT,0,0,gridComm);
-			MPI_Send(p,block_size_pad,MPI_INT,0,1,gridComm);
+			MPI_Send(tmp,size,MPI_INT,0,0,gridComm);
+			MPI_Send(p,size,MPI_INT,0,1,gridComm);
 		}
-	}		
+	}
 }
 
 /* Free used memory */
@@ -1435,7 +1486,7 @@ void final_check(int nrows, int ncols, u32 const * v, u32 const * vtM)
 /* Solve x*M == 0 or M*x == 0 (if transpose == True) */
 u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const * m, int n, bool transpose)
 {
-	//global variables
+	//variables
 	int nrows = transpose ? M->ncols : M->nrows;
 	int ncols = transpose ? M->nrows : M->ncols;
 	long block_size = nrows * n;
@@ -1459,6 +1510,14 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 		printf("impossible d'allouer les blocs de vecteur\n");
 		MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
 	}
+
+	//set low_for & high_for
+	int interval = nrows / n;
+	int div = interval / np;
+	int mod = interval % np;
+	high_for = div + mod + div * myGridRank - 1;
+	low_for = (myGridRank == 0) ? 0 : high_for - div + 1;
+	if(myGridRank == np - 1) high_for = interval;
 
 	//process 0 initiates the algorithm  	
 	if(myGridRank == 0)
@@ -1510,8 +1569,8 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 			break;
 
 		//parallel matrix-vector multiplication (u <- Mt * v)
-		mpi_create_vector_block(M,v,&sub_v,n,!transpose);
-    	mpi_matrix_vector_product(tmp,m,sub_v,n,!transpose);
+		mpi_create_vector_block(M,v,&sub_v,!transpose);
+    	mpi_matrix_vector_product(tmp,m,sub_v,!transpose);
 
 		//free sub_v for the next multiplication
 		if(sub_v != NULL)
@@ -1521,8 +1580,8 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 		}
 
 		//parallel matrix-vector multiplication (v <- M * u)
-		mpi_create_vector_block(M,tmp,&sub_v,n,transpose);
-    	mpi_matrix_vector_product(Av,m,sub_v,n,transpose);
+		mpi_create_vector_block(M,tmp,&sub_v,transpose);
+    	mpi_matrix_vector_product(Av,m,sub_v,transpose);
 
 		//free sub_v for the next iteration
 		if(sub_v != NULL)
@@ -1531,43 +1590,38 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 			sub_v = NULL;
 		}
 
-		//n * n products
+		//for n * n products
 		u32 vtAv[n * n];
 		u32 vtAAv[n * n];
 		u32 winv[n * n];
 		u32 d[n];
 
-		//process 0 broadcast Av and v before the n * n products
-		MPI_Bcast(Av,block_size_pad,MPI_INT,0,gridComm);
-		MPI_Bcast(v,block_size_pad,MPI_INT,0,gridComm);
+		//process 0 broadcasts Av and v before the n * n products
+		mpi_prepare_block_dot_products(Av,v,nrows);
 
 		//parallel block dot products
-		mpi_block_dot_products(vtAv, vtAAv, nrows, Av, v);
+		mpi_block_dot_products(vtAv,vtAAv,Av,v);
 
-		//process 0 computes 
+		//process 0 broadcasts vtAv, vtAAv and portions of v, Av and p before orthogonalization & semi_inversion
+		mpi_prepare_orthogonalize(vtAv,vtAAv,v,Av,p,nrows);
+
+		//stop ?
+		stop = (semi_inverse(vtAv, winv, d) == 0);
+
+		//process 0 checks that everything is working ; disable in production
 		if(myGridRank == 0)
 		{
-			stop = (semi_inverse(vtAv, winv, d) == 0);
-			/* check that everything is working ; disable in production */
 			correctness_tests(vtAv, vtAAv, winv, d);
 		}
+		
+		//wait the process 0 to finish the checks
+		MPI_Barrier(gridComm);
 
-		//warn all the processes if we have finished
-		MPI_Bcast(&stop,1,MPI_INT,0,gridComm);
-    				
 		if (stop)
 			break;
 
-		//process 0 broadcast vtAv, vtAAv, winv, tmp, p and d before orthogonalization
-		MPI_Bcast(vtAv,n * n,MPI_INT,0,gridComm);
-		MPI_Bcast(vtAAv,n * n,MPI_INT,0,gridComm);
-		MPI_Bcast(winv,n * n,MPI_INT,0,gridComm);
-		MPI_Bcast(tmp,block_size_pad,MPI_INT,0,gridComm);
-		MPI_Bcast(p,block_size_pad,MPI_INT,0,gridComm);
-		MPI_Bcast(d,n,MPI_INT,0,gridComm);
-
 		//parallel orthogonalization
-		mpi_orthogonalize(v, tmp, p, d, vtAv, vtAAv, winv, nrows, Av, block_size_pad);
+		mpi_orthogonalize(v,tmp,p,d,vtAv,vtAAv,winv,nrows,Av);
 
 		//process 0 prepares the next iteration
 		if(myGridRank == 0)
