@@ -1391,10 +1391,6 @@ void mpi_free_matrices(struct sparsematrix_t *M, struct sparsematrix_t *m)
     free(m->x);
 }
 
-/*************************** checkpoint functions ************************/
-
-
-
 /*************************** block-Lanczos algorithm ************************/
 
 void verbosity()
