@@ -1,0 +1,1 @@
+mpiexec -x OMP_STACKSIZE="1G" --mca pml ^ucx --map-by ppr:1:node -machinefile $OAR_NODEFILE ./lanczos_modp --prime 1073741789 --n 4 --matrix ../TF/challenge_hard.mtx
