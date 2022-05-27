@@ -27,6 +27,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 #include <assert.h>
 
 #include "mmio.h"
@@ -117,6 +118,31 @@ void human_format(char * target, long n) {
 			sprintf(target, "%.1fT", n / 1e12);
 			return;
 	}
+}
+
+/* set the stack limit to 1 Go */
+void setStackLimit()
+{
+	const rlim_t kStackSize = 1073741824; //1 Go
+    struct rlimit rl;
+    int result;
+
+    result = getrlimit(RLIMIT_STACK, &rl);
+
+    if (result == 0)
+    {
+        if (rl.rlim_cur < kStackSize)
+        {
+            rl.rlim_cur = kStackSize;
+            result = setrlimit(RLIMIT_STACK, &rl);
+
+            if(result != 0)
+            {
+				printf("Error while setting stack size, error %d\n",result);
+				exit(1);
+            }
+        }
+    }
 }
 
 /************************** command-line options ****************************/
@@ -494,6 +520,9 @@ void mpi_init(struct sparsematrix_t *M, struct sparsematrix_t *m)
     
     //generate column communicator based on the grid coordinates
     MPI_Comm_split(gridComm,myGridCoord[1],myGridCoord[0],&colComm);
+
+	//set stack limit
+	setStackLimit();
    
     //set matrices
     M->i = NULL;
@@ -1152,7 +1181,7 @@ void mpi_prepare_block_dot_products(u32 * Av, u32 * v, int N)
 		//get bounds
 		int low = mod + div * i;
 		int start = low*n*n;
-		int size = (i != np - 1 ? div : div + inter_mod)*n*n;  
+		int size = ((i == np - 1 && inter_mod != 0) ? div + 1 : div)*n*n;  
 	
 		//process 0 sends the portions
 		if(myGridRank == 0)
@@ -1188,7 +1217,7 @@ void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const *
 	int div = inter_div / np;
 	int mod = inter_div % np;
 	int size = (myGridRank == 0) ? div + mod : div;
-	if(myGridRank == np - 1) size += inter_mod;
+	if(myGridRank == np - 1 && inter_mod != 0) size++;
 	for (int i = 0; i < size*n; i += n)
 	{
 		matmul_CpAtB(vtAv,&v[i*n], &Av[i*n]);
@@ -1247,7 +1276,7 @@ void mpi_prepare_orthogonalize(u32 * vtAv, u32 * vtAAv, u32 * p, int N)
 		//get bounds
 		int low = mod + div * i;
 		int start = low*n*n;
-		int size = (i != np - 1 ? div : div + inter_mod)*n*n;
+		int size = ((i == np - 1 && inter_mod != 0) ? div + 1 : div)*n*n;
 
 		//process 0 sends the portions
 		if(myGridRank == 0)
@@ -1314,7 +1343,7 @@ void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, c
 	int div = inter_div / np;
 	int mod = inter_div % np;
 	int size = (myGridRank == 0) ? div + mod : div;
-	if(myGridRank == np - 1) size += inter_mod;
+	if(myGridRank == np - 1 && inter_mod != 0) size++;
 
 	//each process prepares tmp     
 	for (long i = 0; i < size*n; i++)
@@ -1353,7 +1382,7 @@ void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, c
 		//get bounds
 		int low = mod + div * i;
 		int start = low*n*n;
-		size = (i != np - 1 ? div : div + inter_mod)*n*n;
+		size = ((i == np - 1 && inter_mod != 0) ? div + 1 : div)*n*n;
 
 		//process 0 gets the result
 		if(myGridRank == 0)

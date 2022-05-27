@@ -27,6 +27,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 #include <assert.h>
 
 #include "mmio.h"
@@ -129,6 +130,31 @@ void human_format(char * target, long n)
 		sprintf(target, "%.1fT", n / 1e12);
 		return;
 	}
+}
+
+/* set the stack limit to 1 Go */
+void setStackLimit()
+{
+	const rlim_t kStackSize = 1073741824;
+    struct rlimit rl;
+    int result;
+
+    result = getrlimit(RLIMIT_STACK, &rl);
+
+    if (result == 0)
+    {
+        if (rl.rlim_cur < kStackSize)
+        {
+            rl.rlim_cur = kStackSize;
+            result = setrlimit(RLIMIT_STACK, &rl);
+
+            if(result != 0)
+            {
+				printf("Error while setting stack size, error %d\n",result);
+				exit(1);
+            }
+        }
+    }
 }
 
 /************************** command-line options ****************************/
@@ -870,6 +896,7 @@ void save_vector_block(char const * filename, int nrows, int ncols, u32 const * 
 
 int main(int argc, char ** argv)
 {
+	setStackLimit();
 	process_command_line_options(argc, argv);
 	struct sparsematrix_t M;
 	sparsematrix_mm_load(&M, matrix_filename);

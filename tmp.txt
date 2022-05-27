@@ -2,7 +2,7 @@
 
 void setStackLimit()
 {
-	const rlim_t kStackSize = 1048576 * 1000;
+	const rlim_t kStackSize = 1073741824;
     struct rlimit rl;
     int result;
 
