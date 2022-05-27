@@ -43,6 +43,7 @@ lanczos_modp
 *.su
 *.idb
 *.pdb
+vgcore*
 
 # Kernel Module Compile Results
 *.mod*
@@ -61,3 +62,4 @@ dkms.conf
 
 #python script file
 project_script/*
+*.ipynb

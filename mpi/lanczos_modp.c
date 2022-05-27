@@ -53,12 +53,12 @@ int expected_iterations;
 /******************* sparse matrix data structure **************/
 
 struct sparsematrix_t {
-        int nrows;        // dimensions
-        int ncols;
-        long int nnz;     // number of non-zero coefficients
-        int *i;           // row indices (for COO matrices)
-        int *j;           // column indices
-        u32 *x;           // coefficients
+	int nrows;        // dimensions
+	int ncols;
+	long int nnz;     // number of non-zero coefficients
+	int *i;           // row indices (for COO matrices)
+	int *j;           // column indices
+	u32 *x;           // coefficients
 };
 
 /******************* pseudo-random generator (xoshiro256+) ********************/
@@ -68,129 +68,129 @@ u64 rng_state[4] = {0x1415926535, 0x8979323846, 0x2643383279, 0x5028841971};
 
 u64 rotl(u64 x, int k)
 {
-        u64 foo = x << k;
-        u64 bar = x >> (64 - k);
-        return foo ^ bar;
+	u64 foo = x << k;
+	u64 bar = x >> (64 - k);
+	return foo ^ bar;
 }
 
 u64 random64()
 {
-        u64 result = rotl(rng_state[0] + rng_state[3], 23) + rng_state[0];
-        u64 t = rng_state[1] << 17;
-        rng_state[2] ^= rng_state[0];
-        rng_state[3] ^= rng_state[1];
-        rng_state[1] ^= rng_state[2];
-        rng_state[0] ^= rng_state[3];
-        rng_state[2] ^= t;
-        rng_state[3] = rotl(rng_state[3], 45);
-        return result;
+	u64 result = rotl(rng_state[0] + rng_state[3], 23) + rng_state[0];
+	u64 t = rng_state[1] << 17;
+	rng_state[2] ^= rng_state[0];
+	rng_state[3] ^= rng_state[1];
+	rng_state[1] ^= rng_state[2];
+	rng_state[0] ^= rng_state[3];
+	rng_state[2] ^= t;
+	rng_state[3] = rotl(rng_state[3], 45);
+	return result;
 }
 
 /******************* utility functions ********************/
 
 double wtime()
 {
-        struct timeval ts;
-        gettimeofday(&ts, NULL);
-        return (double) ts.tv_sec + ts.tv_usec / 1e6;
+	struct timeval ts;
+	gettimeofday(&ts, NULL);
+	return (double) ts.tv_sec + ts.tv_usec / 1e6;
 }
 
 /* represent n in <= 6 char  */
 void human_format(char * target, long n) {
-        if (n < 1000) {
-                sprintf(target, "%" PRId64, n);
-                return;
-        }
-        if (n < 1000000) {
-                sprintf(target, "%.1fK", n / 1e3);
-                return;
-        }
-        if (n < 1000000000) {
-                sprintf(target, "%.1fM", n / 1e6);
-                return;
-        }
-        if (n < 1000000000000ll) {
-                sprintf(target, "%.1fG", n / 1e9);
-                return;
-        }
-        if (n < 1000000000000000ll) {
-                sprintf(target, "%.1fT", n / 1e12);
-                return;
-        }
+	if (n < 1000) {
+			sprintf(target, "%" PRId64, n);
+			return;
+	}
+	if (n < 1000000) {
+			sprintf(target, "%.1fK", n / 1e3);
+			return;
+	}
+	if (n < 1000000000) {
+			sprintf(target, "%.1fM", n / 1e6);
+			return;
+	}
+	if (n < 1000000000000ll) {
+			sprintf(target, "%.1fG", n / 1e9);
+			return;
+	}
+	if (n < 1000000000000000ll) {
+			sprintf(target, "%.1fT", n / 1e12);
+			return;
+	}
 }
 
 /************************** command-line options ****************************/
 
 void usage(char ** argv)
 {
-        printf("%s [OPTIONS]\n\n", argv[0]);
-        printf("Options:\n");
-        printf("--matrix FILENAME           MatrixMarket file containing the spasre matrix\n");
-        printf("--prime P                   compute modulo P\n");
-        printf("--n N                       blocking factor [default 1]\n");
-        printf("--output-file FILENAME      store the block of kernel vectors\n");
-        printf("--right                     compute right kernel vectors\n");
-        printf("--left                      compute left kernel vectors [default]\n");
-        printf("--stop-after N              stop the algorithm after N iterations\n");
-        printf("\n");
-        printf("The --matrix and --prime arguments are required\n");
-        printf("The --stop-after and --output-file arguments mutually exclusive\n");
-        exit(0);
+	printf("%s [OPTIONS]\n\n", argv[0]);
+	printf("Options:\n");
+	printf("--matrix FILENAME           MatrixMarket file containing the spasre matrix\n");
+	printf("--prime P                   compute modulo P\n");
+	printf("--n N                       blocking factor [default 1]\n");
+	printf("--output-file FILENAME      store the block of kernel vectors\n");
+	printf("--right                     compute right kernel vectors\n");
+	printf("--left                      compute left kernel vectors [default]\n");
+	printf("--stop-after N              stop the algorithm after N iterations\n");
+	printf("\n");
+	printf("The --matrix and --prime arguments are required\n");
+	printf("The --stop-after and --output-file arguments mutually exclusive\n");
+	exit(0);
 }
 
 void process_command_line_options(int argc, char ** argv)
 {
-        struct option longopts[8] = {
-                {"matrix", required_argument, NULL, 'm'},
-                {"prime", required_argument, NULL, 'p'},
-                {"n", required_argument, NULL, 'n'},
-                {"output-file", required_argument, NULL, 'o'},
-                {"right", no_argument, NULL, 'r'},
-                {"left", no_argument, NULL, 'l'},
-                {"stop-after", required_argument, NULL, 's'},
-                {NULL, 0, NULL, 0}
-        };
-        char ch;
-        while ((ch = getopt_long(argc, argv, "", longopts, NULL)) != -1) {
-                switch (ch) {
-                case 'm':
-                        matrix_filename = optarg;
-                        break;
-                case 'n':
-                        n = atoi(optarg);
-                        break;
-                case 'p':
-                        prime = atoll(optarg);
-                        break;
-                case 'o':
-                        kernel_filename = optarg;
-                        break;
-                case 'r':
-                        right_kernel = true;
-                        break;
-                case 'l':
-                        right_kernel = false;
-                        break;
-                case 's':
-                        stop_after = atoll(optarg);
-                        break;
-                default:
-                        errx(1, "Unknown option\n");
-                }
-        }
+	struct option longopts[8] = {
+		{"matrix", required_argument, NULL, 'm'},
+		{"prime", required_argument, NULL, 'p'},
+		{"n", required_argument, NULL, 'n'},
+		{"output-file", required_argument, NULL, 'o'},
+		{"right", no_argument, NULL, 'r'},
+		{"left", no_argument, NULL, 'l'},
+		{"stop-after", required_argument, NULL, 's'},
+		{NULL, 0, NULL, 0}
+	};
+	char ch;
+	while ((ch = getopt_long(argc, argv, "", longopts, NULL)) != -1) {
+		switch (ch) {
+		case 'm':
+				matrix_filename = optarg;
+				break;
+		case 'n':
+				n = atoi(optarg);
+				break;
+		case 'p':
+				prime = atoll(optarg);
+				break;
+		case 'o':
+				kernel_filename = optarg;
+				break;
+		case 'r':
+				right_kernel = true;
+				break;
+		case 'l':
+				right_kernel = false;
+				break;
+		case 's':
+				stop_after = atoll(optarg);
+				break;
+		default:
+				errx(1, "Unknown option\n");
+		}
+	}
 
-        /* missing required args? */
-        if (matrix_filename == NULL || prime == 0)
-                usage(argv);
-        /* exclusive arguments? */
-        if (kernel_filename != NULL && stop_after > 0)
-                usage(argv);
-        /* range checking */
-        if (prime > 0x3fffffdd) {
-                errx(1, "p is capped at 2**30 - 35.  Slighly larger values could work, with the\n");
-                printf("suitable code modifications.\n");
-                exit(1);
-        }
+	/* missing required args? */
+	if (matrix_filename == NULL || prime == 0)
+			usage(argv);
+	/* exclusive arguments? */
+	if (kernel_filename != NULL && stop_after > 0)
+			usage(argv);
+	/* range checking */
+	if (prime > 0x3fffffdd) {
+			errx(1, "p is capped at 2**30 - 35.  Slighly larger values could work, with the\n");
+			printf("suitable code modifications.\n");
+			exit(1);
+	}
 }
 
 /****************** sparse matrix operations ******************/
@@ -198,68 +198,68 @@ void process_command_line_options(int argc, char ** argv)
 /* Load a matrix from a file in "list of triplet" representation */
 void sparsematrix_mm_load(struct sparsematrix_t * M, char const * filename)
 {
-        int nrows = 0;
-        int ncols = 0;
-        long nnz = 0;
+	int nrows = 0;
+	int ncols = 0;
+	long nnz = 0;
 
-        printf("Loading matrix from %s\n", filename);
-        fflush(stdout);
+	printf("Loading matrix from %s\n", filename);
+	fflush(stdout);
 
-        FILE *f = fopen(filename, "r");
-        if (f == NULL)
-                err(1, "impossible d'ouvrir %s", filename);
+	FILE *f = fopen(filename, "r");
+	if (f == NULL)
+			err(1, "impossible d'ouvrir %s", filename);
 
-        /* read the header, check format */
-        MM_typecode matcode;
-        if (mm_read_banner(f, &matcode) != 0)
-                errx(1, "Could not process Matrix Market banner.\n");
-        if (!mm_is_matrix(matcode) || !mm_is_sparse(matcode))
-                errx(1, "Matrix Market type: [%s] not supported (only sparse matrices are OK)", 
-                        mm_typecode_to_str(matcode));
-        if (!mm_is_general(matcode) || !mm_is_integer(matcode))
-                errx(1, "Matrix type [%s] not supported (only integer general are OK)", 
-                        mm_typecode_to_str(matcode));
-        if (mm_read_mtx_crd_size(f, &nrows, &ncols, &nnz) != 0)
-                errx(1, "Cannot read matrix size");
-        fprintf(stderr, "  - [%s] %d x %d with %ld nz\n", mm_typecode_to_str(matcode), nrows, ncols, nnz);
-        fprintf(stderr, "  - Allocating %.1f MByte\n", 1e-6 * (12.0 * nnz));
+	/* read the header, check format */
+	MM_typecode matcode;
+	if (mm_read_banner(f, &matcode) != 0)
+			errx(1, "Could not process Matrix Market banner.\n");
+	if (!mm_is_matrix(matcode) || !mm_is_sparse(matcode))
+			errx(1, "Matrix Market type: [%s] not supported (only sparse matrices are OK)", 
+					mm_typecode_to_str(matcode));
+	if (!mm_is_general(matcode) || !mm_is_integer(matcode))
+			errx(1, "Matrix type [%s] not supported (only integer general are OK)", 
+					mm_typecode_to_str(matcode));
+	if (mm_read_mtx_crd_size(f, &nrows, &ncols, &nnz) != 0)
+			errx(1, "Cannot read matrix size");
+	fprintf(stderr, "  - [%s] %d x %d with %ld nz\n", mm_typecode_to_str(matcode), nrows, ncols, nnz);
+	fprintf(stderr, "  - Allocating %.1f MByte\n", 1e-6 * (12.0 * nnz));
 
-        /* Allocate memory for the matrix */
-        int *Mi = malloc(nnz * sizeof(*Mi));
-        int *Mj = malloc(nnz * sizeof(*Mj));
-        u32 *Mx = malloc(nnz * sizeof(*Mx));
-        if (Mi == NULL || Mj == NULL || Mx == NULL)
-                err(1, "Cannot allocate sparse matrix");
+	/* Allocate memory for the matrix */
+	int *Mi = malloc(nnz * sizeof(*Mi));
+	int *Mj = malloc(nnz * sizeof(*Mj));
+	u32 *Mx = malloc(nnz * sizeof(*Mx));
+	if (Mi == NULL || Mj == NULL || Mx == NULL)
+			err(1, "Cannot allocate sparse matrix");
 
-        /* Parse and load actual entries */
-        double start = wtime();
-        for (long u = 0; u < nnz; u++) {
-                int i, j;
-                u32 x;
-                if (3 != fscanf(f, "%d %d %d\n", &i, &j, &x))
-                        errx(1, "parse error entry %ld\n", u);
-                Mi[u] = i - 1;  /* MatrixMarket is 1-based */
-                Mj[u] = j - 1;
-                Mx[u] = x % prime;
-                
-                // verbosity
-                if ((u & 0xffff) == 0xffff) {
-                        double elapsed = wtime() - start;
-                        double percent = (100. * u) / nnz;
-                        double rate = ftell(f) / 1048576. / elapsed;
-                        printf("\r  - Reading %s: %.1f%% (%.1f MB/s)", matrix_filename, percent, rate);
-                }
-        }
+	/* Parse and load actual entries */
+	double start = wtime();
+	for (long u = 0; u < nnz; u++) {
+			int i, j;
+			u32 x;
+			if (3 != fscanf(f, "%d %d %d\n", &i, &j, &x))
+					errx(1, "parse error entry %ld\n", u);
+			Mi[u] = i - 1;  /* MatrixMarket is 1-based */
+			Mj[u] = j - 1;
+			Mx[u] = x % prime;
+			
+			// verbosity
+			if ((u & 0xffff) == 0xffff) {
+					double elapsed = wtime() - start;
+					double percent = (100. * u) / nnz;
+					double rate = ftell(f) / 1048576. / elapsed;
+					printf("\r  - Reading %s: %.1f%% (%.1f MB/s)", matrix_filename, percent, rate);
+			}
+	}
 
-        /* finalization */
-        fclose(f);
-        printf("\n");
-        M->nrows = nrows;
-        M->ncols = ncols;
-        M->nnz = nnz;
-        M->i = Mi;
-        M->j = Mj;
-        M->x = Mx;
+	/* finalization */
+	fclose(f);
+	printf("\n");
+	M->nrows = nrows;
+	M->ncols = ncols;
+	M->nnz = nnz;
+	M->i = Mi;
+	M->j = Mj;
+	M->x = Mx;
 }
 
 /****************** dense linear algebra modulo p *************************/ 
@@ -331,22 +331,22 @@ void matmul_CpAtB(u32 * C, u32 const * A, u32 const * B)
 /* return a^(-1) mod b */
 u32 invmod(u32 a, u32 b)
 {
-        long int t = 0;  
-        long int nt = 1;  
-        long int r = b;  
-        long int nr = a % b;
-        while (nr != 0) {
-                long int q = r / nr;
-                long int tmp = nt;  
-                nt = t - q*nt;  
-                t = tmp;
-                tmp = nr;  
-                nr = r - q*nr;  
-                r = tmp;
-        }
-        if (t < 0)
-                t += b;
-        return (u32) t;
+	long int t = 0;  
+	long int nt = 1;  
+	long int r = b;  
+	long int nr = a % b;
+	while (nr != 0) {
+			long int q = r / nr;
+			long int tmp = nt;  
+			nt = t - q*nt;  
+			t = tmp;
+			tmp = nr;  
+			nr = r - q*nr;  
+			r = tmp;
+	}
+	if (t < 0)
+			t += b;
+	return (u32) t;
 }
 
 /* 
@@ -355,100 +355,100 @@ u32 invmod(u32 a, u32 b)
  */ 
 int semi_inverse(u32 const * M_, u32 * winv, u32 * d)
 {
-        u32 M[n * n];
-        int npiv = 0;
-        for (int i = 0; i < n * n; i++)   /* copy M <--- M_ */
-                M[i] = M_[i];
-        /* phase 1: compute d */
-        for (int i = 0; i < n; i++)       /* setup d */
-                d[i] = 0;
-        for (int j = 0; j < n; j++) {     /* search a pivot on column j */
-                int pivot = n;
-                for (int i = j; i < n; i++)
-                        if (M[i*n + j] != 0) {
-                                pivot = i;
-                                break;
-                        }
-                if (pivot >= n)
-                        continue;         /* no pivot found */
-                d[j] = 1;
-                npiv += 1;
-                u64 pinv = invmod(M[pivot*n + j], prime);  /* multiply pivot row to make pivot == 1 */
-                for (int k = 0; k < n; k++) {
-                        u64 x = M[pivot*n + k];
-                        M[pivot*n + k] = (x * pinv) % prime;
-                }
-                for (int k = 0; k < n; k++) {   /* swap pivot row with row j */
-                        u32 tmp = M[j*n + k];
-                        M[j*n + k] = M[pivot*n + k];
-                        M[pivot*n + k] = tmp;
-                }
-                for (int i = 0; i < n; i++) {  /* eliminate everything else on column j */
-                        if (i == j)
-                                continue;
-                        u64 multiplier = M[i*n+j];
-                        for (int k = 0; k < n; k++) {
-                                u64 x = M[i * n + k];
-                                u64 y = M[j * n + k];
-                                M[i * n + k] = (x + (prime - multiplier) * y) % prime;  
-                        }
-                }
-        }
-        /* phase 2: compute d and winv */
-        for (int i = 0; i < n; i++)
-                for (int j = 0; j < n; j++) {
-                        M[i*n + j] = (d[i] && d[j]) ? M_[i*n + j] : 0;
-                        winv[i*n + j] = ((i == j) && d[i]) ? 1 : 0;
-                }
-        npiv = 0;
-        for (int i = 0; i < n; i++)
-                d[i] = 0;
-        /* same dance */
-        for (int j = 0; j < n; j++) { 
-                int pivot = n;
-                for (int i = j; i < n; i++)
-                        if (M[i*n + j] != 0) {
-                                pivot = i;
-                                break;
-                        }
-                if (pivot >= n)
-                        continue;
-                d[j] = 1;
-                npiv += 1;
-                u64 pinv = invmod(M[pivot*n + j], prime);
-                for (int k = 0; k < n; k++) {
-                        u64 x = M[pivot*n + k];
-                        M[pivot*n + k] = (x * pinv) % prime;
-                }
-                for (int k = 0; k < n; k++) {
-                        u32 tmp = M[j*n + k];
-                        M[j*n + k] = M[pivot*n + k];
-                        M[pivot*n + k] = tmp;
-                }
-                for (int k = 0; k < n; k++) {
-                        u64 x = winv[pivot * n + k];
-                        winv[pivot * n + k] = (x * pinv) % prime;
-                }
-                for (int k = 0; k < n; k++) {
-                        u32 tmp = winv[j * n + k];
-                        winv[j * n + k] = winv[pivot * n + k];
-                        winv[pivot * n + k] = tmp;
-                }
-                for (int i = 0; i < n; i++) {
-                        if (i == j)
-                                continue;
-                        u64 multiplier = M[i * n + j];
-                        for (int k = 0; k < n; k++) {
-                                u64 x = M[i * n + k];
-                                u64 y = M[j * n + k];
-                                M[i * n + k] = (x + (prime - multiplier) * y) % prime;
-                                u64 w = winv[i * n + k];
-                                u64 z = winv[j * n + k];
-                                winv[i * n + k] = (w + (prime - multiplier) * z) % prime;  
-                        }
-                }
-        }
-        return npiv;
+	u32 M[n * n];
+	int npiv = 0;
+	for (int i = 0; i < n * n; i++)   /* copy M <--- M_ */
+			M[i] = M_[i];
+	/* phase 1: compute d */
+	for (int i = 0; i < n; i++)       /* setup d */
+			d[i] = 0;
+	for (int j = 0; j < n; j++) {     /* search a pivot on column j */
+			int pivot = n;
+			for (int i = j; i < n; i++)
+					if (M[i*n + j] != 0) {
+							pivot = i;
+							break;
+					}
+			if (pivot >= n)
+					continue;         /* no pivot found */
+			d[j] = 1;
+			npiv += 1;
+			u64 pinv = invmod(M[pivot*n + j], prime);  /* multiply pivot row to make pivot == 1 */
+			for (int k = 0; k < n; k++) {
+					u64 x = M[pivot*n + k];
+					M[pivot*n + k] = (x * pinv) % prime;
+			}
+			for (int k = 0; k < n; k++) {   /* swap pivot row with row j */
+					u32 tmp = M[j*n + k];
+					M[j*n + k] = M[pivot*n + k];
+					M[pivot*n + k] = tmp;
+			}
+			for (int i = 0; i < n; i++) {  /* eliminate everything else on column j */
+					if (i == j)
+							continue;
+					u64 multiplier = M[i*n+j];
+					for (int k = 0; k < n; k++) {
+							u64 x = M[i * n + k];
+							u64 y = M[j * n + k];
+							M[i * n + k] = (x + (prime - multiplier) * y) % prime;  
+					}
+			}
+	}
+	/* phase 2: compute d and winv */
+	for (int i = 0; i < n; i++)
+			for (int j = 0; j < n; j++) {
+					M[i*n + j] = (d[i] && d[j]) ? M_[i*n + j] : 0;
+					winv[i*n + j] = ((i == j) && d[i]) ? 1 : 0;
+			}
+	npiv = 0;
+	for (int i = 0; i < n; i++)
+			d[i] = 0;
+	/* same dance */
+	for (int j = 0; j < n; j++) { 
+			int pivot = n;
+			for (int i = j; i < n; i++)
+					if (M[i*n + j] != 0) {
+							pivot = i;
+							break;
+					}
+			if (pivot >= n)
+					continue;
+			d[j] = 1;
+			npiv += 1;
+			u64 pinv = invmod(M[pivot*n + j], prime);
+			for (int k = 0; k < n; k++) {
+					u64 x = M[pivot*n + k];
+					M[pivot*n + k] = (x * pinv) % prime;
+			}
+			for (int k = 0; k < n; k++) {
+					u32 tmp = M[j*n + k];
+					M[j*n + k] = M[pivot*n + k];
+					M[pivot*n + k] = tmp;
+			}
+			for (int k = 0; k < n; k++) {
+					u64 x = winv[pivot * n + k];
+					winv[pivot * n + k] = (x * pinv) % prime;
+			}
+			for (int k = 0; k < n; k++) {
+					u32 tmp = winv[j * n + k];
+					winv[j * n + k] = winv[pivot * n + k];
+					winv[pivot * n + k] = tmp;
+			}
+			for (int i = 0; i < n; i++) {
+					if (i == j)
+							continue;
+					u64 multiplier = M[i * n + j];
+					for (int k = 0; k < n; k++) {
+							u64 x = M[i * n + k];
+							u64 y = M[j * n + k];
+							M[i * n + k] = (x + (prime - multiplier) * y) % prime;
+							u64 w = winv[i * n + k];
+							u64 z = winv[j * n + k];
+							winv[i * n + k] = (w + (prime - multiplier) * z) % prime;  
+					}
+			}
+	}
+	return npiv;
 }
 
 /****************** global variables for MPI implementation ******************/
@@ -462,10 +462,6 @@ int notWrapping[2] = {0,0}; //flags to turn off wrapping in grid
 MPI_Comm gridComm; //grid communicator
 MPI_Comm rowComm; //row subset communicator
 MPI_Comm colComm; //column subset communicator
-
-//intervals for the loops in the n * n product functions
-int low_for;
-int high_for;
 
 /****************** MPI functions ******************/
 
@@ -523,9 +519,6 @@ void mpi_get_matrix_size(struct sparsematrix_t *M,char const * filename)
     {
 	    sparsematrix_mm_load(M,filename);
     }
-
-    //wait until the process 0 loads the matrix
-    MPI_Barrier(gridComm);
 
     //broadcast the size of the loaded matrix 
     MPI_Bcast(&(M->nrows),1,MPI_INT,0,gridComm);
@@ -1148,25 +1141,25 @@ void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u3
 void mpi_prepare_block_dot_products(u32 * Av, u32 * v, int N)
 {
 	//variables
-	int interval = N / n;
-	int div = interval / np;
-	int mod = interval % np;
+	int inter_div = N / n;
+	int inter_mod = N % n;
+	int div = inter_div / np;
+	int mod = inter_div % np;
 	
 	//Each process gets its portion from process 0
 	for(int i = 1; i < np; i++)
 	{
-		//get intervals
-		int high = div + mod + div * i - 1;
-		int low = high - div + 1;
-		if(i == np - 1) high = interval;
-		int size = (high - low + 1) * n * n;
-
+		//get bounds
+		int low = mod + div * i;
+		int start = low*n*n;
+		int size = (i != np - 1 ? div : div + inter_mod)*n*n;  
+	
 		//process 0 sends the portions
 		if(myGridRank == 0)
 		{
 			//send to process i
-			MPI_Send(&v[low*n*n],size,MPI_INT,i,0,gridComm);
-			MPI_Send(&Av[low*n*n],size,MPI_INT,i,1,gridComm);
+			MPI_Send(&v[start],size,MPI_INT,i,0,gridComm);
+			MPI_Send(&Av[start],size,MPI_INT,i,1,gridComm);
 		}
 
 		//process i gets its portions
@@ -1174,13 +1167,13 @@ void mpi_prepare_block_dot_products(u32 * Av, u32 * v, int N)
 		{
 			MPI_Status status;
 			MPI_Recv(v,size,MPI_INT,0,0,gridComm,&status);
-			MPI_Recv(Av,size,MPI_INT,0,1,gridComm,&status);
+			MPI_Recv(Av,size,MPI_INT,0,1,gridComm,&status);	
 		}
 	}
 }
 
 /* Computes vtAv <-- transpose(v) * Av, vtAAv <-- transpose(Av) * Av */
-void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const * v)
+void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const * v, int N)
 {
     //prepare variables
 	for (int i = 0; i < n * n; i++)
@@ -1190,11 +1183,16 @@ void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const *
 	}
 
 	//each process computes a part of the n * n matrix product 
-	int size = high_for - low_for;	
-	for (int i = 0; i <= size; i++)
+	int inter_div = N / n;
+	int inter_mod = N % n;
+	int div = inter_div / np;
+	int mod = inter_div % np;
+	int size = (myGridRank == 0) ? div + mod : div;
+	if(myGridRank == np - 1) size += inter_mod;
+	for (int i = 0; i < size*n; i += n)
 	{
-		matmul_CpAtB(vtAv,&v[i*n*n], &Av[i*n*n]);
-		matmul_CpAtB(vtAAv,&Av[i*n*n], &Av[i*n*n]);
+		matmul_CpAtB(vtAv,&v[i*n], &Av[i*n]);
+		matmul_CpAtB(vtAAv,&Av[i*n], &Av[i*n]);
 	}
 
 	//Each process sends its result to process 0
@@ -1231,42 +1229,38 @@ void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const *
 }
 
 /* Prepare the orthogonalize step for each process  */
-void mpi_prepare_orthogonalize(u32 * vtAv, u32 * vtAAv, u32 * v, u32 * Av, u32 * p, int N)
+void mpi_prepare_orthogonalize(u32 * vtAv, u32 * vtAAv, u32 * p, int N)
 {
 	//first get vtAv & vtAAv
 	MPI_Bcast(vtAv,n * n,MPI_INT,0,gridComm);
 	MPI_Bcast(vtAAv,n * n,MPI_INT,0,gridComm);
 
 	//variables
-	int interval = N / n;
-	int div = interval / np;
-	int mod = interval % np;
+	int inter_div = N / n;
+	int inter_mod = N % n;
+	int div = inter_div / np;
+	int mod = inter_div % np;
 	
 	//Each process gets its portion from process 0
 	for(int i = 1; i < np; i++)
 	{
-		//get intervals
-		int high = div + mod + div * i - 1;
-		int low = (i == 0) ? 0 : high - div + 1;
-		if(i == np - 1) high = interval;
-		int size = (high - low + 1) * n * n;
+		//get bounds
+		int low = mod + div * i;
+		int start = low*n*n;
+		int size = (i != np - 1 ? div : div + inter_mod)*n*n;
 
 		//process 0 sends the portions
 		if(myGridRank == 0)
 		{
 			//send to process i
-			MPI_Send(&v[low*n*n],size,MPI_INT,i,0,gridComm);
-			MPI_Send(&Av[low*n*n],size,MPI_INT,i,1,gridComm);
-			MPI_Send(&p[low*n*n],size,MPI_INT,i,2,gridComm);
+			MPI_Send(&p[start],size,MPI_INT,i,0,gridComm);
 		}
 
 		//process i gets its portions
 		if(myGridRank == i)
 		{
 			MPI_Status status;
-			MPI_Recv(v,size,MPI_INT,0,0,gridComm,&status);
-			MPI_Recv(Av,size,MPI_INT,0,1,gridComm,&status);
-			MPI_Recv(p,size,MPI_INT,0,2,gridComm,&status);
+			MPI_Recv(p,size,MPI_INT,0,0,gridComm,&status);
 		}
 	}
 }
@@ -1274,9 +1268,16 @@ void mpi_prepare_orthogonalize(u32 * vtAv, u32 * vtAAv, u32 * v, u32 * Av, u32 *
 /* Compute the next values of v (in tmp) and p */
 void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const u32 *vtAAv, u32 const * winv, int N, u32 const * Av)
 {
-	/* each process computes the n x n matrix c */
+	//each process computes the n x n matrix c
 	u32 c[n * n];
 	u32 spliced[n * n];
+
+	//to avoid compiler warnings (Wmaybe-uninitialized) when calling matmul_CpAB
+	for(int i = 0; i < n * n; i++)
+	{
+		c[i] = 0;
+		spliced[i] = 0;
+	}
 
 	for(int i = 0; i < n; i++)
 	{
@@ -1308,12 +1309,15 @@ void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, c
 	}
 
 	//get intervals
-	int div = N / np;
-	int mod = N % np;
-	int size = ((myGridRank == 0) ? div + mod : div) + n * n;
-	
-	/* each process prepares tmp */        
-	for (long i = 0; i < size; i++)
+	int inter_div = N / n;
+	int inter_mod = N % n;
+	int div = inter_div / np;
+	int mod = inter_div % np;
+	int size = (myGridRank == 0) ? div + mod : div;
+	if(myGridRank == np - 1) size += inter_mod;
+
+	//each process prepares tmp     
+	for (long i = 0; i < size*n; i++)
 	{
 		for (long j = 0; j < n; j++)
 		{
@@ -1321,16 +1325,15 @@ void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, c
 		}
 	}
 
-	//each process computes a part of the n * n matrix product for tmp
-	int loop_size = high_for - low_for;	
-	for (int i = 0; i <= loop_size; i++)
+	//each process computes a part of the n * n matrix product for tmp	
+	for (int i = 0; i < size*n; i += n)
 	{
-		matmul_CpAB(&tmp[i*n*n], &v[i*n*n], c);
-		matmul_CpAB(&tmp[i*n*n], &p[i*n*n], vtAvd);
+		matmul_CpAB(&tmp[i*n], &v[i*n], c);
+		matmul_CpAB(&tmp[i*n], &p[i*n], vtAvd);
 	}
 
-	/* each process prepares p */
-	for (long i = 0; i < size; i++)
+	// each process prepares p
+	for (long i = 0; i < size*n; i++)
 	{
 		for (long j = 0; j < n; j++)
 		{
@@ -1339,31 +1342,25 @@ void mpi_orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, c
 	}
 
 	//each process computes a part of the n * n matrix product for p	
-	for (int i = 0; i <= loop_size; i++)
+	for (int i = 0; i < size*n; i += n)
 	{
-		matmul_CpAB(&p[i*n*n], &v[i*n*n], winv);
+		matmul_CpAB(&p[i*n], &v[i*n], winv);
 	}
-
-	//intervals
-	int interval = N / n;
-	int div_recv = interval / np;
-	int mod_recv = interval % np;
 
 	//Each process sends its result to process 0
 	for(int i = 1; i < np; i++)
 	{
-		//get intervals
-		int high = div_recv + mod_recv + div_recv * i - 1;
-		int low = high - div_recv + 1;
-		if(i == np - 1) high = interval;
-		int size = (high - low + 1) * n * n;
+		//get bounds
+		int low = mod + div * i;
+		int start = low*n*n;
+		size = (i != np - 1 ? div : div + inter_mod)*n*n;
 
 		//process 0 gets the result
 		if(myGridRank == 0)
 		{
 			MPI_Status status;
-			MPI_Recv(&tmp[low*n*n],size,MPI_INT,i,0,gridComm,&status);
-			MPI_Recv(&p[low*n*n],size,MPI_INT,i,1,gridComm,&status);
+			MPI_Recv(&tmp[start],size,MPI_INT,i,0,gridComm,&status);
+			MPI_Recv(&p[start],size,MPI_INT,i,1,gridComm,&status);
 		}
 
 		//process i sends its results
@@ -1395,92 +1392,110 @@ void mpi_free_matrices(struct sparsematrix_t *M, struct sparsematrix_t *m)
 
 void verbosity()
 {
-        n_iterations += 1;
-        double elapsed = wtime() - start;
-        if (elapsed - last_print < 1) 
-                return;
+	n_iterations += 1;
+	double elapsed = wtime() - start;
+	if (elapsed - last_print < 1) 
+			return;
 
-        last_print = elapsed;
-        double per_iteration = elapsed / n_iterations;
-        double estimated_length = expected_iterations * per_iteration;
-        time_t end = start + estimated_length;
-        if (!ETA_flag) {
-                int d = estimated_length / 86400;
-                estimated_length -= d * 86400;
-                int h = estimated_length / 3600;
-                estimated_length -= h * 3600;
-                int m = estimated_length / 60;
-                estimated_length -= m * 60;
-                int s = estimated_length;
-                printf("    - Expected duration : ");
-                if (d > 0)
-                        printf("%d j ", d);
-                if (h > 0)
-                        printf("%d h ", h);
-                if (m > 0)
-                        printf("%d min ", m);
-                printf("%d s\n", s);
-                ETA_flag = true;
-        }
-        char ETA[30];
-        ctime_r(&end, ETA);
-        ETA[strlen(ETA) - 1] = 0;  // élimine le \n final
-        printf("\r    - iteration %d / %d. %.3fs per iteration. ETA: %s", 
-                n_iterations, expected_iterations, per_iteration, ETA);
-        fflush(stdout);
+	last_print = elapsed;
+	double per_iteration = elapsed / n_iterations;
+	double estimated_length = expected_iterations * per_iteration;
+	time_t end = start + estimated_length;
+	if (!ETA_flag) {
+			int d = estimated_length / 86400;
+			estimated_length -= d * 86400;
+			int h = estimated_length / 3600;
+			estimated_length -= h * 3600;
+			int m = estimated_length / 60;
+			estimated_length -= m * 60;
+			int s = estimated_length;
+			printf("    - Expected duration : ");
+			if (d > 0)
+					printf("%d j ", d);
+			if (h > 0)
+					printf("%d h ", h);
+			if (m > 0)
+					printf("%d min ", m);
+			printf("%d s\n", s);
+			ETA_flag = true;
+	}
+	char ETA[30];
+	ctime_r(&end, ETA);
+	ETA[strlen(ETA) - 1] = 0;  // élimine le \n final
+	printf("\r    - iteration %d / %d. %.3fs per iteration. ETA: %s", 
+			n_iterations, expected_iterations, per_iteration, ETA);
+	fflush(stdout);
 }
 
 /* optional tests */
 void correctness_tests(u32 const * vtAv, u32 const * vtAAv, u32 const * winv, u32 const * d)
 {
-        /* vtAv, vtAAv, winv are actually symmetric + winv and d match */
-        for (int i = 0; i < n; i++) 
-                for (int j = 0; j < n; j++) {
-                        assert(vtAv[i*n + j] == vtAv[j*n + i]);
-                        assert(vtAAv[i*n + j] == vtAAv[j*n + i]);
-                        assert(winv[i*n + j] == winv[j*n + i]);
-                        assert((winv[i*n + j] == 0) || d[i] || d[j]);
-                }
-        /* winv satisfies d == winv * vtAv*d */
-        u32 vtAvd[n * n];
-        u32 check[n * n];
-        for (int i = 0; i < n; i++) 
-                for (int j = 0; j < n; j++) {
-                        vtAvd[i*n + j] = d[j] ? vtAv[i*n + j] : 0;
-                        check[i*n + j] = 0;
-                }
-        matmul_CpAB(check, winv, vtAvd);
-        for (int i = 0; i < n; i++) 
-                for (int j = 0; j < n; j++)
-                        if (i == j)
-                                assert(check[j*n + j] == d[i]);
-                        else
-                                assert(check[i*n + j] == 0);
+	/* vtAv, vtAAv, winv are actually symmetric + winv and d match */
+	for (int i = 0; i < n; i++) 
+		for (int j = 0; j < n; j++)
+		{
+			assert(vtAv[i*n + j] == vtAv[j*n + i]);
+			assert(vtAAv[i*n + j] == vtAAv[j*n + i]);
+			assert(winv[i*n + j] == winv[j*n + i]);
+			assert((winv[i*n + j] == 0) || d[i] || d[j]);
+		}
+
+	/* winv satisfies d == winv * vtAv*d */
+	u32 vtAvd[n * n];
+	u32 check[n * n];
+	u32 tmp[n * n];
+
+	//to avoid compiler warnings (Wmaybe-uninitialized) when calling matmul_CpAB
+	for(int i = 0; i < n * n; i++)
+	{
+		vtAvd[i] = 0;
+		check[i] = 0;
+		tmp[i] = 0;
+	}
+
+	//to avoid compiler warnings (Wmaybe-uninitialized) when calling matmul_CpAB
+	for(int i = 0; i < n * n; i++)
+	{
+		tmp[i] = winv[i];
+	}
+
+	for (int i = 0; i < n; i++) 
+		for (int j = 0; j < n; j++) {
+			vtAvd[i*n + j] = d[j] ? vtAv[i*n + j] : 0;
+			check[i*n + j] = 0;
+		}
+	matmul_CpAB(check, tmp, vtAvd);
+	for (int i = 0; i < n; i++) 
+			for (int j = 0; j < n; j++)
+					if (i == j)
+							assert(check[j*n + j] == d[i]);
+					else
+							assert(check[i*n + j] == 0);
 }
 
 /* check that we actually computed a kernel vector */
 void final_check(int nrows, int ncols, u32 const * v, u32 const * vtM)
 {
-        printf("Final check:\n");
-        /* Check if v != 0 */
-        bool good = false;
-        for (long i = 0; i < nrows; i++)
-                for (long j = 0; j < n; j++)
-                        good |= (v[i*n + j] != 0);
-        if (good)
-                printf("  - OK:    v != 0\n");
-        else
-                printf("  - KO:    v == 0\n");
-                
-        /* tmp == Mt * v. Check if tmp == 0 */
-        good = true;
-        for (long i = 0; i < ncols; i++)
-                for (long j = 0; j < n; j++)
-                        good &= (vtM[i*n + j] == 0);
-        if (good)
-                printf("  - OK: vt*M == 0\n");
-        else
-                printf("  - KO: vt*M != 0\n");                
+	printf("Final check:\n");
+	/* Check if v != 0 */
+	bool good = false;
+	for (long i = 0; i < nrows; i++)
+			for (long j = 0; j < n; j++)
+					good |= (v[i*n + j] != 0);
+	if (good)
+			printf("  - OK:    v != 0\n");
+	else
+			printf("  - KO:    v == 0\n");
+			
+	/* tmp == Mt * v. Check if tmp == 0 */
+	good = true;
+	for (long i = 0; i < ncols; i++)
+			for (long j = 0; j < n; j++)
+					good &= (vtM[i*n + j] == 0);
+	if (good)
+			printf("  - OK: vt*M == 0\n");
+	else
+			printf("  - KO: vt*M != 0\n");                
 }
 
 /* Solve x*M == 0 or M*x == 0 (if transpose == True) */
@@ -1511,26 +1526,20 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 		MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
 	}
 
-	//set low_for & high_for
-	int interval = nrows / n;
-	int div = interval / np;
-	int mod = interval % np;
-	high_for = div + mod + div * myGridRank - 1;
-	low_for = (myGridRank == 0) ? 0 : high_for - div + 1;
-	if(myGridRank == np - 1) high_for = interval;
-
 	//process 0 initiates the algorithm  	
 	if(myGridRank == 0)
 	{
 		printf("Block Lanczos\n");
-		char human_size[8];
+		char human_size[16];
 		human_format(human_size, 4 * sizeof(int) * block_size_pad);
+		human_size[9] = 0;
 		printf("  - Extra storage needed: %sB\n", human_size);
 
 		/* warn the user */
 		expected_iterations = 1 + ncols / n;
-		char human_its[8];
+		char human_its[16];
 		human_format(human_its, expected_iterations);
+		human_its[9] = 0;
 		printf("  - Expecting %s iterations\n", human_its);
 
 		/* prepare initial values */
@@ -1600,10 +1609,10 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 		mpi_prepare_block_dot_products(Av,v,nrows);
 
 		//parallel block dot products
-		mpi_block_dot_products(vtAv,vtAAv,Av,v);
-
-		//process 0 broadcasts vtAv, vtAAv and portions of v, Av and p before orthogonalization & semi_inversion
-		mpi_prepare_orthogonalize(vtAv,vtAAv,v,Av,p,nrows);
+		mpi_block_dot_products(vtAv,vtAAv,Av,v,nrows);
+		
+		//process 0 broadcasts vtAv, vtAAv and portion of p before orthogonalization & semi_inversion
+		mpi_prepare_orthogonalize(vtAv,vtAAv,p,nrows);
 
 		//stop ?
 		stop = (semi_inverse(vtAv, winv, d) == 0);
@@ -1614,9 +1623,6 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 			correctness_tests(vtAv, vtAAv, winv, d);
 		}
 		
-		//wait the process 0 to finish the checks
-		MPI_Barrier(gridComm);
-
 		if (stop)
 			break;
 
@@ -1653,17 +1659,17 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 
 void save_vector_block(char const * filename, int nrows, int ncols, u32 const * v)
 {
-        printf("Saving result in %s\n", filename);
-        FILE * f = fopen(filename, "w");
-        if (f == NULL)
-                err(1, "cannot open %s", filename);
-        fprintf(f, "%%%%MatrixMarket matrix array integer general\n");
-        fprintf(f, "%%block of left-kernel vector computed by lanczos_modp\n");
-        fprintf(f, "%d %d\n", nrows, ncols);
-        for (long j = 0; j < ncols; j++)
-                for (long i = 0; i < nrows; i++)
-                        fprintf(f, "%d\n", v[i*n + j]);
-        fclose(f);
+	printf("Saving result in %s\n", filename);
+	FILE * f = fopen(filename, "w");
+	if (f == NULL)
+			err(1, "cannot open %s", filename);
+	fprintf(f, "%%%%MatrixMarket matrix array integer general\n");
+	fprintf(f, "%%block of left-kernel vector computed by lanczos_modp\n");
+	fprintf(f, "%d %d\n", nrows, ncols);
+	for (long j = 0; j < ncols; j++)
+			for (long i = 0; i < nrows; i++)
+					fprintf(f, "%d\n", v[i*n + j]);
+	fclose(f);
 }
 
 /*************************** main function *********************************/

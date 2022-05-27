@@ -558,6 +558,13 @@ void orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const
 	u32 c[n * n];
 	u32 spliced[n * n];
 
+	//to avoid compiler warnings (Wmaybe-uninitialized) when calling matmul_CpAB
+	for(int i = 0; i < n * n; i++)
+	{
+		c[i] = 0;
+		spliced[i] = 0;
+	}
+
 	for (int i = 0; i < n; i++)
 	{
 		for (int j = 0; j < n; j++)
@@ -682,6 +689,21 @@ void correctness_tests(u32 const * vtAv, u32 const * vtAAv, u32 const * winv, u3
 	/* winv satisfies d == winv * vtAv*d */
 	u32 vtAvd[n * n];
 	u32 check[n * n];
+	u32 tmp[n * n];
+
+	//to avoid compiler warnings (Wmaybe-uninitialized) when calling matmul_CpAB
+	for(int i = 0; i < n * n; i++)
+	{
+		vtAvd[i] = 0;
+		check[i] = 0;
+		tmp[i] = 0;
+	}
+
+	//to avoid compiler warnings (Wmaybe-uninitialized) when calling matmul_CpAB
+	for(int i = 0; i < n * n; i++)
+	{
+		tmp[i] = winv[i];
+	}
 
 	for (int i = 0; i < n; i++) 
 		for (int j = 0; j < n; j++)
@@ -690,7 +712,7 @@ void correctness_tests(u32 const * vtAv, u32 const * vtAAv, u32 const * winv, u3
 			check[i*n + j] = 0;
 		}
 
-	matmul_CpAB(check, winv, vtAvd);
+	matmul_CpAB(check, tmp, vtAvd);
 
 	for (int i = 0; i < n; i++) 
 		for (int j = 0; j < n; j++)
@@ -739,8 +761,9 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
 	long Mpad = ((ncols + n - 1) / n) * n;
 	long block_size_pad = (Npad > Mpad ? Npad : Mpad) * n;
 
-	char human_size[8];
+	char human_size[16];
 	human_format(human_size, 4 * sizeof(int) * block_size_pad);
+	human_size[9] = 0;
 	printf("  - Extra storage needed: %sB\n", human_size);
 
 	u32 *v = malloc(sizeof(*v) * block_size_pad);
@@ -755,8 +778,9 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
 
 	/* warn the user */
 	expected_iterations = 1 + ncols / n;
-	char human_its[8];
+	char human_its[16];
 	human_format(human_its, expected_iterations);
+	human_its[9] = 0;
 	printf("  - Expecting %s iterations\n", human_its);
 			
 	/* prepare initial values */

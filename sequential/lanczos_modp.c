@@ -445,7 +445,7 @@ void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 cons
         for (int i = 0; i < n * n; i++)
                 vtAv[i] = 0;
         for (int i = 0; i < N; i += n)
-                matmul_CpAtB(vtAv, &v[i*n], &Av[i*n]);                
+                matmul_CpAtB(vtAv, &v[i*n], &Av[i*n]);
         for (int i = 0; i < n * n; i++)
                 vtAAv[i] = 0;
         for (int i = 0; i < N; i += n)
@@ -595,8 +595,9 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
         long Npad = ((nrows + n - 1) / n) * n;
         long Mpad = ((ncols + n - 1) / n) * n;
         long block_size_pad = (Npad > Mpad ? Npad : Mpad) * n;
-        char human_size[8];
+        char human_size[16];
         human_format(human_size, 4 * sizeof(int) * block_size_pad);
+        human_size[9] = 0;
         printf("  - Extra storage needed: %sB\n", human_size);
         u32 *v = malloc(sizeof(*v) * block_size_pad);
         u32 *tmp = malloc(sizeof(*tmp) * block_size_pad);
@@ -607,8 +608,9 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
         
         /* warn the user */
         expected_iterations = 1 + ncols / n;
-        char human_its[8];
+        char human_its[16];
         human_format(human_its, expected_iterations);
+        human_its[9] = 0;
         printf("  - Expecting %s iterations\n", human_its);
         
         /* prepare initial values */
