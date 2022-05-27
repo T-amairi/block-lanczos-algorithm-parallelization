@@ -135,7 +135,7 @@ void human_format(char * target, long n)
 /* set the stack limit to 1 Go */
 void setStackLimit()
 {
-	const rlim_t kStackSize = 1073741824;
+	const rlim_t kStackSize = 1024L * 1024L * 1024L;
     struct rlimit rl;
     int result;
 
