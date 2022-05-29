@@ -52,6 +52,12 @@ double last_print;
 bool ETA_flag;
 int expected_iterations;
 
+bool checkpoints = false; //to enable checkpoints
+double checkpoint_timer = 60; //save the vector v every 60 sec
+bool load_checkpoint = false; //to load a vector from a checkpoint file
+double extra_time = 0.0; /* variables of the "verbosity engine" */
+int fixed_expected_iterations;
+
 /******************* sparse matrix data structure **************/
 
 struct sparsematrix_t
@@ -161,24 +167,26 @@ void setStackLimit()
 
 void usage(char ** argv)
 {
-	printf("%s [OPTIONS]\n\n", argv[0]);
-	printf("Options:\n");
-	printf("--matrix FILENAME           MatrixMarket file containing the spasre matrix\n");
-	printf("--prime P                   compute modulo P\n");
-	printf("--n N                       blocking factor [default 1]\n");
-	printf("--output-file FILENAME      store the block of kernel vectors\n");
-	printf("--right                     compute right kernel vectors\n");
-	printf("--left                      compute left kernel vectors [default]\n");
-	printf("--stop-after N              stop the algorithm after N iterations\n");
-	printf("\n");
-	printf("The --matrix and --prime arguments are required\n");
-	printf("The --stop-after and --output-file arguments mutually exclusive\n");
-	exit(0);
+        printf("%s [OPTIONS]\n\n", argv[0]);
+        printf("Options:\n");
+        printf("--matrix FILENAME           MatrixMarket file containing the sparse matrix\n");
+        printf("--prime P                   compute modulo P\n");
+        printf("--n N                       blocking factor [default 1]\n");
+        printf("--output-file FILENAME      store the block of kernel vectors\n");
+        printf("--right                     compute right kernel vectors\n");
+        printf("--left                      compute left kernel vectors [default]\n");
+        printf("--stop-after N              stop the algorithm after N iterations\n");
+        printf("--checkpoint cp             enable checkpointing every cp seconds [default cp = 60 s]\n");
+	    printf("--input-file                load vectors from checkpointing files\n");
+        printf("\n");
+        printf("The --matrix and --prime arguments are required\n");
+        printf("The --stop-after and --output-file arguments mutually exclusive\n");
+        exit(0);
 }
 
 void process_command_line_options(int argc, char ** argv)
 {
-	struct option longopts[8] = {
+	struct option longopts[10] = {
 		{"matrix", required_argument, NULL, 'm'},
 		{"prime", required_argument, NULL, 'p'},
 		{"n", required_argument, NULL, 'n'},
@@ -186,6 +194,8 @@ void process_command_line_options(int argc, char ** argv)
 		{"right", no_argument, NULL, 'r'},
 		{"left", no_argument, NULL, 'l'},
 		{"stop-after", required_argument, NULL, 's'},
+		{"checkpoint", optional_argument, NULL, 'c'},
+		{"input-file", no_argument, NULL, 'i'},
 		{NULL, 0, NULL, 0}
 	};
 	char ch;
@@ -212,6 +222,21 @@ void process_command_line_options(int argc, char ** argv)
 		case 's':
 				stop_after = atoll(optarg);
 				break;
+		case 'c':
+				checkpoints = true;
+
+				if(optarg == NULL && optind < argc && argv[optind][0] != '-')
+    			{
+        			optarg = argv[optind++];
+     				checkpoint_timer = atoi(optarg);
+				}
+
+				if(optarg) checkpoint_timer = atoi(optarg);
+				break;
+
+		case 'i':
+				load_checkpoint = true;
+				break;
 		default:
 				errx(1, "Unknown option\n");
 		}
@@ -219,15 +244,15 @@ void process_command_line_options(int argc, char ** argv)
 
 	/* missing required args? */
 	if (matrix_filename == NULL || prime == 0)
-		usage(argv);
+			usage(argv);
 	/* exclusive arguments? */
 	if (kernel_filename != NULL && stop_after > 0)
-		usage(argv);
+			usage(argv);
 	/* range checking */
 	if (prime > 0x3fffffdd) {
-		errx(1, "p is capped at 2**30 - 35.  Slighly larger values could work, with the\n");
-		printf("suitable code modifications.\n");
-		exit(1);
+			errx(1, "p is capped at 2**30 - 35.  Slighly larger values could work, with the\n");
+			printf("suitable code modifications.\n");
+			exit(1);
 	}
 }
 
@@ -541,6 +566,111 @@ int semi_inverse(u32 const * M_, u32 * winv, u32 * d)
 	return npiv;
 }
 
+/**************************** checkpoint functions ************************/
+
+void save_vectors(char const * filename, int block_size_pad, u32 const * v)
+{
+	FILE * f = fopen(filename, "w");
+
+	if(f == NULL)
+	{
+		err(1, "cannot open %s", filename);
+	}
+
+	printf("		>> Making a snapshot of a vector in %s\n",filename);
+
+	for(int i = 0; i < block_size_pad; i++)
+	{
+		fprintf(f, "%d\n", v[i]);
+	}
+
+	fclose(f);
+}
+
+void save_infos_verbosity(char const * filename)
+{
+	FILE * f = fopen(filename, "w");
+
+	if(f == NULL)
+	{
+		err(1, "cannot open %s", filename);
+	}
+
+	printf("		>> Saving verbosity engine infos in %s\n",filename);
+
+	fprintf(f, "%d\n", n_iterations);
+	fprintf(f, "%f\n", start);
+	fprintf(f, "%f\n", wtime());
+	fclose(f);
+}
+
+void load_vectors(char const * filename, int block_size_pad, u32 * v)
+{
+	FILE * f;
+    f = fopen(filename, "r");
+
+    if(f == NULL)
+	{
+        err(1, "cannot open %s", filename);
+	}
+
+	int i = 0;
+	char line[100];
+
+    while(fgets(line,100,f) != NULL)
+	{
+		if(i >= block_size_pad)
+		{
+			err(1, "cannot open %s", filename);
+		}
+		
+		v[i] = atoi(line);
+		i++;
+    }
+
+    fclose(f);
+}
+
+void load_infos_verbosity(char const * filename)
+{
+	FILE * f;
+    f = fopen(filename, "r");
+
+    if(f == NULL)
+	{
+		err(1, "cannot open %s", filename);
+	}
+
+	int i = 0;
+	char line[100];
+	int saved_start = 0;
+	int saved_wtime = 0;
+
+
+    while(fgets(line,100,f) != NULL)
+	{
+		if(i == 0)
+		{
+			n_iterations = atoi(line);
+		}
+
+		else if(i == 1)
+		{
+			saved_start = atof(line);
+		}
+
+		else if(i == 2)
+		{
+			saved_wtime = atof(line);
+		}
+
+		i++;
+    }
+
+	extra_time = saved_wtime - saved_start;
+    fclose(f);
+}
+
 /*************************** block-Lanczos algorithm ************************/
 
 /* Computes vtAv <-- transpose(v) * Av, vtAAv <-- transpose(Av) * Av */
@@ -665,37 +795,37 @@ void orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const
 void verbosity()
 {
 	n_iterations += 1;
-	double elapsed = wtime() - start;
+	double elapsed = (wtime() - start) + extra_time;
 	if (elapsed - last_print < 1) 
-		return;
+			return;
 
 	last_print = elapsed;
 	double per_iteration = elapsed / n_iterations;
 	double estimated_length = expected_iterations * per_iteration;
 	time_t end = start + estimated_length;
 	if (!ETA_flag) {
-		int d = estimated_length / 86400;
-		estimated_length -= d * 86400;
-		int h = estimated_length / 3600;
-		estimated_length -= h * 3600;
-		int m = estimated_length / 60;
-		estimated_length -= m * 60;
-		int s = estimated_length;
-		printf("    - Expected duration : ");
-		if (d > 0)
-				printf("%d j ", d);
-		if (h > 0)
-				printf("%d h ", h);
-		if (m > 0)
-				printf("%d min ", m);
-		printf("%d s\n", s);
-		ETA_flag = true;
+			int d = estimated_length / 86400;
+			estimated_length -= d * 86400;
+			int h = estimated_length / 3600;
+			estimated_length -= h * 3600;
+			int m = estimated_length / 60;
+			estimated_length -= m * 60;
+			int s = estimated_length;
+			printf("    - Expected duration : ");
+			if (d > 0)
+					printf("%d j ", d);
+			if (h > 0)
+					printf("%d h ", h);
+			if (m > 0)
+					printf("%d min ", m);
+			printf("%d s\n", s);
+			ETA_flag = true;
 	}
 	char ETA[30];
 	ctime_r(&end, ETA);
 	ETA[strlen(ETA) - 1] = 0;  // élimine le \n final
 	printf("\r    - iteration %d / %d. %.3fs per iteration. ETA: %s", 
-			n_iterations, expected_iterations, per_iteration, ETA);
+			n_iterations,  fixed_expected_iterations, per_iteration, ETA);
 	fflush(stdout);
 }
 
@@ -776,8 +906,6 @@ void final_check(int nrows, int ncols, u32 const * v, u32 const * vtM)
 /* Solve x*M == 0 or M*x == 0 (if transpose == True) */
 u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
 {
-	printf("Block Lanczos\n");
-
 	/************* preparations **************/
 	/* allocate blocks of vectors */
 	int nrows = transpose ? M->ncols : M->nrows;
@@ -786,11 +914,6 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
 	long Npad = ((nrows + n - 1) / n) * n;
 	long Mpad = ((ncols + n - 1) / n) * n;
 	long block_size_pad = (Npad > Mpad ? Npad : Mpad) * n;
-
-	char human_size[16];
-	human_format(human_size, 4 * sizeof(int) * block_size_pad);
-	human_size[9] = 0;
-	printf("  - Extra storage needed: %sB\n", human_size);
 
 	u32 *v = malloc(sizeof(*v) * block_size_pad);
 	u32 *tmp = malloc(sizeof(*tmp) * block_size_pad);
@@ -802,33 +925,55 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
 		errx(1, "impossible d'allouer les blocs de vecteur");
 	}
 
+	//if checkpoint flag, load from snapshots from files
+	if(load_checkpoint)
+	{
+		load_vectors("v.txt",block_size_pad,v);
+		load_vectors("tmp.txt",block_size_pad,tmp);
+		load_vectors("Av.txt",block_size_pad,Av);
+		load_vectors("p.txt",block_size_pad,p);
+		load_infos_verbosity("verbosity.txt");
+	}
+
+	else
+	{
+		/* prepare initial values */
+		#pragma omp parallel
+		{
+			#pragma omp for
+			for (long i = 0; i < block_size_pad; i++)
+			{
+				Av[i] = 0;
+				v[i] = 0;
+				p[i] = 0;
+				tmp[i] = 0;
+			}
+
+			#pragma omp for
+			for (long i = 0; i < block_size; i++)
+				v[i] = random64() % prime;
+		}
+	}
+
+	printf("Block Lanczos\n");
+	char human_size[16];
+	human_format(human_size, 4 * sizeof(int) * block_size_pad);
+	human_size[9] = 0;
+	printf("  - Extra storage needed: %sB\n", human_size);
+
 	/* warn the user */
-	expected_iterations = 1 + ncols / n;
+	fixed_expected_iterations = 1 + ncols / n;
+	expected_iterations = fixed_expected_iterations - ((load_checkpoint) ? n_iterations : 0); 
 	char human_its[16];
 	human_format(human_its, expected_iterations);
 	human_its[9] = 0;
 	printf("  - Expecting %s iterations\n", human_its);
-			
-	/* prepare initial values */
-	#pragma omp parallel for
-	for(long i = 0; i < block_size_pad; i++)
-	{
-		Av[i] = 0;
-		v[i] = 0;
-		p[i] = 0;
-		tmp[i] = 0;
-	}
-
-	#pragma omp parallel for
-	for(long i = 0; i < block_size; i++)
-	{
-		v[i] = random64() % prime;
-	}
 
 	/************* main loop *************/
 	printf("  - Main loop\n");
 	start = wtime();
 	bool stop = false;
+	double checkpoint_start = wtime(); 
 
 	while(true) 
 	{
@@ -860,6 +1005,17 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
 		}
 
 		verbosity();
+
+		if(checkpoints && (wtime() - checkpoint_start) >= checkpoint_timer)
+		{
+			printf("\n");
+			save_infos_verbosity("verbosity.txt");
+			save_vectors("v.txt", block_size_pad, v);
+			save_vectors("tmp.txt", block_size_pad, tmp);
+			save_vectors("Av.txt", block_size_pad, Av);
+			save_vectors("p.txt", block_size_pad, p);
+			checkpoint_start = wtime();
+		}
 	}
 	
 	printf("\n");
