@@ -55,7 +55,7 @@ bool checkpoints = false; //to enable checkpoints
 double checkpoint_timer = 60; //save the vector v every 60 sec
 bool load_checkpoint = false; //to load a vector from a checkpoint file
 double extra_time = 0.0; /* variables of the "verbosity engine" */
-int fixed_expected_iterations;
+int fixed_expected_iterations = 0;
 
 /******************* sparse matrix data structure **************/
 
@@ -1450,7 +1450,8 @@ void save_vectors(char const * filename, int block_size_pad, u32 const * v)
 
 	if(f == NULL)
 	{
-		err(1, "cannot open %s", filename);
+		printf("cannot open %s\n", filename);
+        MPI_Abort(MPI_COMM_WORLD,MPI_ERR_IO);
 	}
 
 	printf("		>> Making a snapshot of a vector in %s\n",filename);
@@ -1461,6 +1462,7 @@ void save_vectors(char const * filename, int block_size_pad, u32 const * v)
 	}
 
 	fclose(f);
+	return;
 }
 
 void save_infos_verbosity(char const * filename)
@@ -1469,7 +1471,8 @@ void save_infos_verbosity(char const * filename)
 
 	if(f == NULL)
 	{
-		err(1, "cannot open %s", filename);
+		printf("cannot open %s\n", filename);
+        MPI_Abort(MPI_COMM_WORLD,MPI_ERR_IO);
 	}
 
 	printf("		>> Saving verbosity engine infos in %s\n",filename);
@@ -1478,6 +1481,7 @@ void save_infos_verbosity(char const * filename)
 	fprintf(f, "%f\n", start);
 	fprintf(f, "%f\n", wtime());
 	fclose(f);
+	return;
 }
 
 void load_vectors(char const * filename, int block_size_pad, u32 * v)
@@ -1507,6 +1511,7 @@ void load_vectors(char const * filename, int block_size_pad, u32 * v)
     }
 
     fclose(f);
+	return;
 }
 
 void load_infos_verbosity(char const * filename)
@@ -1524,7 +1529,6 @@ void load_infos_verbosity(char const * filename)
 	char line[100];
 	int saved_start = 0;
 	int saved_wtime = 0;
-
 
     while(fgets(line,100,f) != NULL)
 	{
@@ -1548,6 +1552,7 @@ void load_infos_verbosity(char const * filename)
 
 	extra_time = saved_wtime - saved_start;
     fclose(f);
+	return;
 }
 
 /*************************** block-Lanczos algorithm ************************/

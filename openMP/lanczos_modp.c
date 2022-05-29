@@ -56,7 +56,7 @@ bool checkpoints = false; //to enable checkpoints
 double checkpoint_timer = 60; //save the vector v every 60 sec
 bool load_checkpoint = false; //to load a vector from a checkpoint file
 double extra_time = 0.0; /* variables of the "verbosity engine" */
-int fixed_expected_iterations;
+int fixed_expected_iterations = 0;
 
 /******************* sparse matrix data structure **************/
 
@@ -585,6 +585,7 @@ void save_vectors(char const * filename, int block_size_pad, u32 const * v)
 	}
 
 	fclose(f);
+	return;
 }
 
 void save_infos_verbosity(char const * filename)
@@ -602,6 +603,7 @@ void save_infos_verbosity(char const * filename)
 	fprintf(f, "%f\n", start);
 	fprintf(f, "%f\n", wtime());
 	fclose(f);
+	return;
 }
 
 void load_vectors(char const * filename, int block_size_pad, u32 * v)
@@ -629,6 +631,7 @@ void load_vectors(char const * filename, int block_size_pad, u32 * v)
     }
 
     fclose(f);
+	return;
 }
 
 void load_infos_verbosity(char const * filename)
@@ -669,6 +672,7 @@ void load_infos_verbosity(char const * filename)
 
 	extra_time = saved_wtime - saved_start;
     fclose(f);
+	return;
 }
 
 /*************************** block-Lanczos algorithm ************************/
