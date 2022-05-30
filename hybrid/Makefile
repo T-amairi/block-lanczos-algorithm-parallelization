@@ -1,5 +1,5 @@
 CC = mpicc
-CFLAGS = -std=c99 -g -Wall -Wextra -Werror -O3 -I.
+CFLAGS = -std=c99 -g -Wall -Wextra -Werror -O3 -mfma -I.
 LDFLAGS =
 
 # Uncomment these for OpenMP
