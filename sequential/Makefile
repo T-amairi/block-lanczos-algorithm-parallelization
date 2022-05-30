@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -std=c99 -g -Wall -Wextra -Werror -O3 -march=native -I.
+CFLAGS = -std=c99 -g -Wall -Wextra -Werror -O3 -I.
 LDFLAGS =
 
 # Uncomment these for OpenMP
