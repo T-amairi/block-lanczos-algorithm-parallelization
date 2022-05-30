@@ -145,7 +145,7 @@ void setStackLimit()
             if(result != 0)
             {
 				printf("Error while setting stack size, error %d\n",result);
-				exit(1);
+				MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
             }
         }
     }
