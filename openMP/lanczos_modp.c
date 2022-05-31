@@ -360,7 +360,7 @@ void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 
 			{
 				u64 a = cache[i * n + l];
 				u64 b = x[j * n + l];
-				cache[i * n + l] = (a + v * b); //%prime
+				cache[i * n + l] = (a + v * b);
 			}
 		}
 

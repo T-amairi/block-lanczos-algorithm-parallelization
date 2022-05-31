@@ -1123,50 +1123,40 @@ void mpi_matrix_vector_product(u32 * Y, const struct sparsematrix_t *m, const u3
 	//set condition to be a receiver according to transpose
 	bool isRecv = (transpose) ? (myGridCoord[0] == 0) : (myGridCoord[1] == 0);
 	
-	//get the correct dimension of the grid according to transpose
-	int dim_i = (transpose) ? dims[1] : dims[0];
-	int dim_j = (transpose) ? dims[0] : dims[1];
-
-	/* per the dimension dim_i */
-	for(int i = 0; i < dim_i; i++)
+	//a receiver ?
+	if(isRecv)
 	{
-		//check if a process is on the current row / column
-		bool isPresent = (transpose) ? myGridCoord[1] == i : myGridCoord[0] == i;
-
-		//if it is the case he will have to either send the results or receive them
-		if(isPresent)
+		int numberRecv = ((transpose) ? dims[0] : dims[1]) - 1; //number of sub vectors to receive
+		int count = 0; //to count the number of sub vectors received
+		int buffer[size]; //set buffer
+		MPI_Status status; //set status for MPI_Recv call
+		
+		//infinite loop until receiving all the sub vectors
+		while(1)
 		{
-			/* per the dimension dim_j */
-			for(int j = 1; j < dim_j; j++)
+			//if recv all the sub vectors, break
+			if(count == numberRecv) break;
+
+			//receive the results
+			(transpose) ? MPI_Recv(buffer,size,MPI_INT,MPI_ANY_SOURCE,0,colComm,&status) : MPI_Recv(buffer,size,MPI_INT,MPI_ANY_SOURCE,0,rowComm,&status);
+
+			//sum mod p
+			for(int j = 0; j < size; j++)
 			{
-				//check if the process j is a sender
-				bool isSender = (transpose) ? myGridCoord[0] == j : myGridCoord[1] == j;
-
-				//if a process is on the first row / column, he will get the results 
-				if(isRecv)
-				{
-					int buffer[size]; //set buffer
-					MPI_Status status; //set status for MPI_Recv call
-
-					//receive the results
-					(transpose) ? MPI_Recv(buffer,size,MPI_INT,j,0,colComm,&status) : MPI_Recv(buffer,size,MPI_INT,j,0,rowComm,&status);
-
-					//sum mod p
-					for(int j = 0; j < size; j++)
-					{
-						y[j] = ((u64) y[j] + buffer[j]) % prime;
-					}
-				}
-
-				//otherwise, the process j will send the results
-				else if(isSender)
-				{	
-					(transpose) ? MPI_Send(y,size,MPI_INT,0,0,colComm) : MPI_Send(y,size,MPI_INT,0,0,rowComm);
-				}
+				y[j] = ((u64) y[j] + buffer[j]) % prime;
 			}
+
+			//increment
+			count++;
 		}
 	}
 
+	//not a receiver : send the local sub vector
+	else
+	{
+		(transpose) ? MPI_Send(y,size,MPI_INT,0,0,colComm) : MPI_Send(y,size,MPI_INT,0,0,rowComm);
+	}
+	
     //set the condition to gather according to transpose
     bool condition = (transpose) ? myGridCoord[0] == 0 : myGridCoord[1] == 0;
 
@@ -1249,36 +1239,45 @@ void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const *
 		matmul_CpAtB(vtAAv,&Av[i*n], &Av[i*n]);
 	}
 
-	//Each process sends its result to process 0
 	//here, we are not using MPI_Reduce to avoid overflow caused by the modulus reduction
-	for(int i = 1; i < np; i++)
+	//Each process sends its result to process 0
+	if(myGridRank == 0)
 	{
-		//process 0 gets the result and makes the sum
-		if(myGridRank == 0)
-		{
-			//prepare buffers
-			MPI_Status status;
-			u32 buffer_1[n * n];
-			u32 buffer_2[n * n];
+		//prepare buffers
+		MPI_Status status;
+		u32 buffer_1[n * n];
+		u32 buffer_2[n * n];
 
-			//receive for each i process
-			MPI_Recv(buffer_1,n * n,MPI_INT,i,0,gridComm,&status);
-			MPI_Recv(buffer_2,n * n,MPI_INT,i,1,gridComm,&status);
+		//to count the number of results received
+		int count = 0;
+
+		//infinite loop until receiving all the results
+		while(1)
+		{
+			//if recv all results, break
+			if(count == np - 1) break;
+
+			//receive for each process
+			MPI_Recv(buffer_1,n * n,MPI_INT,MPI_ANY_SOURCE,0,gridComm,&status);
+			MPI_Recv(buffer_2,n * n,MPI_INT,MPI_ANY_SOURCE,1,gridComm,&status);
 
 			//sum mod prime
 			for(int j = 0; j < n * n; j++)
 			{
 				vtAv[j] = ((u64) vtAv[j] + buffer_1[j]) % prime;
 				vtAAv[j] = ((u64) vtAAv[j] + buffer_2[j]) % prime;
-			}	
-		}
+			}
 
-		//process i sends its results
-		if(myGridRank == i)
-		{
-			MPI_Send(vtAv,n * n,MPI_INT,0,0,gridComm);
-			MPI_Send(vtAAv,n * n,MPI_INT,0,1,gridComm);
-		}
+			//increment
+			count++;	
+		} 
+	}
+
+	//if not process 0, send the results
+	else
+	{
+		MPI_Send(vtAv,n * n,MPI_INT,0,0,gridComm);
+		MPI_Send(vtAAv,n * n,MPI_INT,0,1,gridComm);
 	}
 }
 
