@@ -20,8 +20,10 @@
 	>> --right                     compute right kernel vectors
 	>> --left                      compute left kernel vectors [default]
 	>> --stop-after N              stop the algorithm after N iterations
+	>> --mpi-block-product         enable mpi implementation of the block dot product
+	>> --mpi-ortho           	   enable mpi implementation of the orthogonalization phase
 	>> --checkpoint cp             enable checkpointing every cp seconds [default cp = 60 s]
-	>> --input-file                load vectors from checkpointing files 
+	>> --load-checkpoint           load vectors from checkpointing files 
 	>> The --matrix and --prime arguments are required
 	>> The --stop-after and --output-file arguments mutually exclusive
 

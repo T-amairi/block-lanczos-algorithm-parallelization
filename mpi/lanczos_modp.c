@@ -57,6 +57,21 @@ bool load_checkpoint = false; //to load a vector from a checkpoint file
 double extra_time = 0.0; /* variables of the "verbosity engine" */
 int fixed_expected_iterations = 0;
 
+/****************** global variables for MPI implementation ******************/
+
+int np; //total number of processes 
+int myRank; //rank in MPI_COMM_WORLD 
+int myGridRank; //rank in gridComm
+int myGridCoord[2]; //(x,y) coordinates in the grid topology
+int dims[2]; //dimensions of the virtual grid
+int notWrapping[2] = {0,0}; //flags to turn off wrapping in grid
+MPI_Comm gridComm; //grid communicator
+MPI_Comm rowComm; //row subset communicator
+MPI_Comm colComm; //column subset communicator
+
+bool mpi_block_product = false; //to enable mpi implementation of the block dot product
+bool mpi_ortho = false; //to enable mpi implementation of the orthogonalization phase
+
 /******************* sparse matrix data structure **************/
 
 struct sparsematrix_t {
@@ -164,8 +179,10 @@ void usage(char ** argv)
 	printf("--right                     compute right kernel vectors\n");
 	printf("--left                      compute left kernel vectors [default]\n");
 	printf("--stop-after N              stop the algorithm after N iterations\n");
+	printf("--mpi-block-product         enable mpi implementation of the block dot product\n");
+	printf("--mpi-ortho           		enable mpi implementation of the orthogonalization phase\n");
 	printf("--checkpoint cp             enable checkpointing every cp seconds [default cp = 60 s]\n");
-	printf("--input-file                load vectors from checkpointing files\n");
+	printf("--load-checkpoint           load vectors from checkpointing files\n");
 	printf("\n");
 	printf("The --matrix and --prime arguments are required\n");
 	printf("The --stop-after and --output-file arguments mutually exclusive\n");
@@ -174,7 +191,7 @@ void usage(char ** argv)
 
 void process_command_line_options(int argc, char ** argv)
 {
-	struct option longopts[10] = {
+	struct option longopts[12] = {
 		{"matrix", required_argument, NULL, 'm'},
 		{"prime", required_argument, NULL, 'p'},
 		{"n", required_argument, NULL, 'n'},
@@ -182,8 +199,10 @@ void process_command_line_options(int argc, char ** argv)
 		{"right", no_argument, NULL, 'r'},
 		{"left", no_argument, NULL, 'l'},
 		{"stop-after", required_argument, NULL, 's'},
-		{"checkpoint", optional_argument, NULL, 'c'},
-		{"input-file", no_argument, NULL, 'i'},
+		{"checkpoint", optional_argument, NULL, '1'},
+		{"load-checkpoint", no_argument, NULL, '2'},
+		{"mpi-block-product", no_argument, NULL, '3'},
+		{"mpi-ortho", no_argument, NULL, '4'},
 		{NULL, 0, NULL, 0}
 	};
 	char ch;
@@ -210,7 +229,7 @@ void process_command_line_options(int argc, char ** argv)
 		case 's':
 				stop_after = atoll(optarg);
 				break;
-		case 'c':
+		case '1':
 				checkpoints = true;
 
 				if(optarg == NULL && optind < argc && argv[optind][0] != '-')
@@ -222,8 +241,16 @@ void process_command_line_options(int argc, char ** argv)
 				if(optarg) checkpoint_timer = atoi(optarg);
 				break;
 
-		case 'i':
+		case '2':
 				load_checkpoint = true;
+				break;
+
+		case '3':
+				mpi_block_product = true;
+				break;
+
+		case '4':
+				mpi_ortho = true;
 				break;
 		default:
 				errx(1, "Unknown option\n");
@@ -501,18 +528,6 @@ int semi_inverse(u32 const * M_, u32 * winv, u32 * d)
 	}
 	return npiv;
 }
-
-/****************** global variables for MPI implementation ******************/
-
-int np; //total number of processes 
-int myRank; //rank in MPI_COMM_WORLD 
-int myGridRank; //rank in gridComm
-int myGridCoord[2]; //(x,y) coordinates in the grid topology
-int dims[2]; //dimensions of the virtual grid
-int notWrapping[2] = {0,0}; //flags to turn off wrapping in grid
-MPI_Comm gridComm; //grid communicator
-MPI_Comm rowComm; //row subset communicator
-MPI_Comm colComm; //column subset communicator
 
 /****************** MPI functions ******************/
 
@@ -1556,6 +1571,74 @@ void load_infos_verbosity(char const * filename)
 
 /*************************** block-Lanczos algorithm ************************/
 
+/* Computes vtAv <-- transpose(v) * Av, vtAAv <-- transpose(Av) * Av */
+void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 const * v)
+{
+	for (int i = 0; i < n * n; i++)
+	{
+		vtAv[i] = 0;
+		vtAAv[i] = 0;
+	}
+			
+	for (int i = 0; i < N; i += n)
+	{
+		matmul_CpAtB(vtAv, &v[i*n], &Av[i*n]);
+		matmul_CpAtB(vtAAv, &Av[i*n], &Av[i*n]);
+	}
+}
+
+/* Compute the next values of v (in tmp) and p */
+void orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const u32 *vtAAv, u32 const * winv, int N, u32 const * Av)
+{
+	/* compute the n x n matrix c */
+	u32 c[n * n];
+	u32 spliced[n * n];
+
+	//to avoid compiler warnings (Wmaybe-uninitialized) when calling matmul_CpAB
+	for(int i = 0; i < n * n; i++)
+	{
+		c[i] = 0;
+		spliced[i] = 0;
+	}
+
+	for (int i = 0; i < n; i++)
+		for (int j = 0; j < n; j++)
+		{
+			spliced[i*n + j] = d[j] ? vtAAv[i * n + j] : vtAv[i * n + j];
+			c[i * n + j] = 0;
+		}
+
+	matmul_CpAB(c, winv, spliced);
+
+	for (int i = 0; i < n; i++)
+		for (int j = 0; j < n; j++)
+			c[i * n + j] = prime - c[i * n + j];
+
+	u32 vtAvd[n * n];
+
+	for (int i = 0; i < n; i++)
+		for (int j = 0; j < n; j++)
+			vtAvd[i*n + j] = d[j] ? prime - vtAv[i * n + j] : 0;
+
+	/* compute the next value of v ; store it in tmp */        
+	for (long i = 0; i < N; i++)
+		for (long j = 0; j < n; j++)
+			tmp[i*n + j] = d[j] ? Av[i*n + j] : v[i * n + j];
+
+	for (long i = 0; i < N; i += n)
+		matmul_CpAB(&tmp[i*n], &v[i*n], c);	        
+	for (long i = 0; i < N; i += n)
+		matmul_CpAB(&tmp[i*n], &p[i*n], vtAvd);
+	
+	/* compute the next value of p */
+	for (long i = 0; i < N; i++)
+		for (long j = 0; j < n; j++)
+			p[i * n + j] = d[j] ? 0 : p[i * n + j];
+
+	for (long i = 0; i < N; i += n)
+			matmul_CpAB(&p[i*n], &v[i*n], winv);
+}
+
 void verbosity()
 {
 	n_iterations += 1;
@@ -1749,14 +1832,12 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 	while(true)
 	{
 		//only the process 0 handles the execution and when it stops
-		if(myGridRank == 0 && stop_after > 0 && n_iterations == stop_after)
-			stop = true;
+		if(myGridRank == 0 && stop_after > 0 && n_iterations == stop_after) stop = true;
 
 		//warn all the processes if we have finished
 		MPI_Bcast(&stop,1,MPI_INT,0,gridComm);
     				
-		if (stop)
-			break;
+		if(stop) break;
 
 		//parallel matrix-vector multiplication (u <- Mt * v)
 		mpi_create_vector_block(M,v,&sub_v,!transpose);
@@ -1786,29 +1867,63 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 		u32 winv[n * n];
 		u32 d[n];
 
-		//process 0 broadcasts Av and v before the n * n products
-		mpi_prepare_block_dot_products(Av,v,nrows);
-
-		//parallel block dot products
-		mpi_block_dot_products(vtAv,vtAAv,Av,v,nrows);
-		
-		//process 0 broadcasts vtAv, vtAAv and portion of p before orthogonalization & semi_inversion
-		mpi_prepare_orthogonalize(vtAv,vtAAv,p,nrows);
-
-		//stop ?
-		stop = (semi_inverse(vtAv, winv, d) == 0);
-
-		//process 0 checks that everything is working ; disable in production
-		if(myGridRank == 0)
+		//do mpi block dot product
+		if(mpi_block_product)
 		{
-			correctness_tests(vtAv, vtAAv, winv, d);
-		}
-		
-		if (stop)
-			break;
+			//process 0 broadcasts Av and v before the n * n products
+			mpi_prepare_block_dot_products(Av,v,nrows);
 
-		//parallel orthogonalization
-		mpi_orthogonalize(v,tmp,p,d,vtAv,vtAAv,winv,nrows,Av);
+			//parallel block dot products
+			mpi_block_dot_products(vtAv,vtAAv,Av,v,nrows);
+		}
+
+		//process 0 makes the n * n products
+		else if(myGridRank == 0)
+		{
+			block_dot_products(vtAv, vtAAv, nrows, Av, v);
+		}
+
+		//do mpi orthogonalization
+		if(mpi_ortho)
+		{
+			//process 0 broadcasts vtAv, vtAAv and portion of p before orthogonalization & semi_inversion
+			mpi_prepare_orthogonalize(vtAv,vtAAv,p,nrows);
+
+			//stop ?
+			stop = (semi_inverse(vtAv, winv, d) == 0);
+
+			//process 0 checks that everything is working ; disable in production
+			if(myGridRank == 0)
+			{
+				correctness_tests(vtAv, vtAAv, winv, d);
+			}
+			
+			if(stop) break;
+
+			//parallel orthogonalization
+			mpi_orthogonalize(v,tmp,p,d,vtAv,vtAAv,winv,nrows,Av);
+		}
+
+		else
+		{
+			//process 0 checks that everything is working
+			if(myGridRank == 0)
+			{
+				stop = (semi_inverse(vtAv, winv, d) == 0);
+				correctness_tests(vtAv, vtAAv, winv, d);
+			}
+
+			//warn all the processes if we have finished
+			MPI_Bcast(&stop,1,MPI_INT,0,gridComm);
+			
+			if(stop) break;
+
+			//process 0 computes the orthogonalization
+			if(myGridRank == 0)
+			{
+				orthogonalize(v, tmp, p, d, vtAv, vtAAv, winv, nrows, Av);
+			}
+		}
 
 		//process 0 prepares the next iteration
 		if(myGridRank == 0)
