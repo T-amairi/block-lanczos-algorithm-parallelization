@@ -58,21 +58,6 @@ bool load_checkpoint = false; //to load a vector from a checkpoint file
 double extra_time = 0.0; /* variables of the "verbosity engine" */
 int fixed_expected_iterations = 0;
 
-/****************** global variables for MPI implementation ******************/
-
-int np; //total number of processes 
-int myRank; //rank in MPI_COMM_WORLD 
-int myGridRank; //rank in gridComm
-int myGridCoord[2]; //(x,y) coordinates in the grid topology
-int dims[2]; //dimensions of the virtual grid
-int notWrapping[2] = {0,0}; //flags to turn off wrapping in grid
-MPI_Comm gridComm; //grid communicator
-MPI_Comm rowComm; //row subset communicator
-MPI_Comm colComm; //column subset communicator
-
-bool mpi_block_product = false; //to enable mpi implementation of the block dot product
-bool mpi_ortho = false; //to enable mpi implementation of the orthogonalization phase
-
 /******************* sparse matrix data structure **************/
 
 struct sparsematrix_t {
@@ -171,28 +156,26 @@ void setStackLimit()
 
 void usage(char ** argv)
 {
-	printf("%s [OPTIONS]\n\n", argv[0]);
-	printf("Options:\n");
-	printf("--matrix FILENAME           MatrixMarket file containing the sparse matrix\n");
-	printf("--prime P                   compute modulo P\n");
-	printf("--n N                       blocking factor [default 1]\n");
-	printf("--output-file FILENAME      store the block of kernel vectors\n");
-	printf("--right                     compute right kernel vectors\n");
-	printf("--left                      compute left kernel vectors [default]\n");
-	printf("--stop-after N              stop the algorithm after N iterations\n");
-	printf("--mpi-block-product         enable mpi implementation of the block dot product\n");
-	printf("--mpi-ortho           		enable mpi implementation of the orthogonalization phase\n");
-	printf("--checkpoint cp             enable checkpointing every cp seconds [default cp = 60 s]\n");
-	printf("--load-checkpoint           load vectors from checkpointing files\n");
-	printf("\n");
-	printf("The --matrix and --prime arguments are required\n");
-	printf("The --stop-after and --output-file arguments mutually exclusive\n");
-	exit(0);
+        printf("%s [OPTIONS]\n\n", argv[0]);
+        printf("Options:\n");
+        printf("--matrix FILENAME           MatrixMarket file containing the sparse matrix\n");
+        printf("--prime P                   compute modulo P\n");
+        printf("--n N                       blocking factor [default 1]\n");
+        printf("--output-file FILENAME      store the block of kernel vectors\n");
+        printf("--right                     compute right kernel vectors\n");
+        printf("--left                      compute left kernel vectors [default]\n");
+        printf("--stop-after N              stop the algorithm after N iterations\n");
+        printf("--checkpoint cp             enable checkpointing every cp seconds [default cp = 60 s]\n");
+	    printf("--load-checkpoint           load vectors from checkpointing files\n");
+        printf("\n");
+        printf("The --matrix and --prime arguments are required\n");
+        printf("The --stop-after and --output-file arguments mutually exclusive\n");
+        exit(0);
 }
 
 void process_command_line_options(int argc, char ** argv)
 {
-	struct option longopts[12] = {
+	struct option longopts[10] = {
 		{"matrix", required_argument, NULL, 'm'},
 		{"prime", required_argument, NULL, 'p'},
 		{"n", required_argument, NULL, 'n'},
@@ -200,10 +183,8 @@ void process_command_line_options(int argc, char ** argv)
 		{"right", no_argument, NULL, 'r'},
 		{"left", no_argument, NULL, 'l'},
 		{"stop-after", required_argument, NULL, 's'},
-		{"checkpoint", optional_argument, NULL, '1'},
-		{"load-checkpoint", no_argument, NULL, '2'},
-		{"mpi-block-product", no_argument, NULL, '3'},
-		{"mpi-ortho", no_argument, NULL, '4'},
+		{"checkpoint", optional_argument, NULL, 'c'},
+		{"load-checkpoint", no_argument, NULL, 'L'},
 		{NULL, 0, NULL, 0}
 	};
 	char ch;
@@ -230,7 +211,7 @@ void process_command_line_options(int argc, char ** argv)
 		case 's':
 				stop_after = atoll(optarg);
 				break;
-		case '1':
+		case 'c':
 				checkpoints = true;
 
 				if(optarg == NULL && optind < argc && argv[optind][0] != '-')
@@ -242,16 +223,8 @@ void process_command_line_options(int argc, char ** argv)
 				if(optarg) checkpoint_timer = atoi(optarg);
 				break;
 
-		case '2':
+		case 'L':
 				load_checkpoint = true;
-				break;
-
-		case '3':
-				mpi_block_product = true;
-				break;
-
-		case '4':
-				mpi_ortho = true;
 				break;
 		default:
 				errx(1, "Unknown option\n");
@@ -531,6 +504,18 @@ int semi_inverse(u32 const * M_, u32 * winv, u32 * d)
         }
         return npiv;
 }
+
+/****************** global variables for MPI implementation ******************/
+
+int np; //total number of processes 
+int myRank; //rank in MPI_COMM_WORLD 
+int myGridRank; //rank in gridComm
+int myGridCoord[2]; //(x,y) coordinates in the grid topology
+int dims[2]; //dimensions of the virtual grid
+int notWrapping[2] = {0,0}; //flags to turn off wrapping in grid
+MPI_Comm gridComm; //grid communicator
+MPI_Comm rowComm; //row subset communicator
+MPI_Comm colComm; //column subset communicator
 
 /****************** MPI functions ******************/
 
@@ -984,8 +969,8 @@ void mpi_create_matrix_challenge_block(const struct sparsematrix_t *M, struct sp
     }
 }
 
-/* Alloc memory for the sub vector v and get its value */ 
-void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32** v, bool transpose)
+/* Get the sub vector v and its value */ 
+void mpi_get_vector_block(const struct sparsematrix_t *M, const u32* V, u32* v, u32* buffer, bool transpose)
 {
     MPI_Status status; //result of MPI_Recv call
     int coord[2] = {0,0}; //to store the grid coord of the current process
@@ -1029,54 +1014,36 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32**
             low = (j == 0) ? 0 : high;
             high = (j == gridDim - 1) ? dim * n : ((div + mod) + div * j) * n;
 
-            //malloc the buffer
-            u32* buffer = malloc(size * sizeof(buffer));;
-
-			//check allocation
-			if(buffer == NULL)
-			{
-				printf("Cannot allocate memory for buffer\n");
-				MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
-			}
-           
-            //select correct value
-			#pragma omp parallel for
-            for(int k = low; k < high; k++)
-            {
-                buffer[k - low] = V[k];
-            }
-
             //case 1 : current process is 0
             if(dest_rank == myGridRank)
             {
-                //point to the buffer
-                *v = buffer;
+				//select correct value
+				#pragma omp parallel for
+				for(int k = low; k < high; k++)
+				{
+					v[k - low] = V[k];
+				} 
             }
 
             //case 2 : send all the value to dest_rank process
             else
             {
+				//select correct value
+				#pragma omp parallel for
+				for(int k = low; k < high; k++)
+				{
+					buffer[k - low] = V[k];
+				}
+
                 MPI_Send(buffer,size,MPI_INT,dest_rank,0,gridComm);
             }
-
-			if(dest_rank != 0) free(buffer);
         }
 
         //process dest_rank receiving values from process 0
         else if(dest_rank == myGridRank)
-        {
-            //malloc
-            *v = malloc(size * sizeof(*v));
-            
-            //check the allocation
-            if(*v == NULL)
-            {
-                printf("Cannot allocate memory for sub block v\n");
-                MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
-            }
-            
+        {    
             //get the value
-            MPI_Recv(*v,size,MPI_INT,0,0,gridComm,&status);
+            MPI_Recv(v,size,MPI_INT,0,0,gridComm,&status);
         }
 
         //set the condition to broadcast according to transpose
@@ -1085,22 +1052,8 @@ void mpi_create_vector_block(const struct sparsematrix_t *M, const u32* V, u32**
         /* broadcast to all process in the same row if transpose == true or column otherwise */
         if(condition)
         {
-            //first the receiving processes alloc memory for the sub block v
-            if(myGridRank != dest_rank)
-            {
-                //malloc
-                *v = malloc(size * sizeof(*v));
-                
-                //check the allocation
-                if(*v == NULL)
-                {
-                    printf("Cannot allocate memory for sub block v\n");
-                    MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
-                }
-            }
-
-            //and then, broadcast v 
-            (transpose) ? MPI_Bcast(*v,size,MPI_INT,0,rowComm) : MPI_Bcast(*v,size,MPI_INT,0,colComm);
+            //broadcast sub block v 
+            (transpose) ? MPI_Bcast(v,size,MPI_INT,0,rowComm) : MPI_Bcast(v,size,MPI_INT,0,colComm);
         }
     }
 }
@@ -1314,6 +1267,7 @@ void mpi_block_dot_products(u32 * vtAv, u32 * vtAAv, u32 const * Av, u32 const *
 			MPI_Recv(buffer_2,n * n,MPI_INT,MPI_ANY_SOURCE,1,gridComm,&status);
 
 			//sum mod prime
+			#pragma omp parallel for
 			for(int j = 0; j < n * n; j++)
 			{
 				vtAv[j] = ((u64) vtAv[j] + buffer_1[j]) % prime;
@@ -1616,125 +1570,6 @@ void load_infos_verbosity(char const * filename)
 
 /*************************** block-Lanczos algorithm ************************/
 
-/* Computes vtAv <-- transpose(v) * Av, vtAAv <-- transpose(Av) * Av */
-void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 const * v)
-{
-	long size = n * n;
-	u32 cache1[size];
-	u32 cache2[size];
-
-	#pragma omp parallel for
-	for (long i = 0; i < size; i++)
-	{
-		vtAv[i] = 0;
-		vtAAv[i] = 0;
-		cache1[i] = 0;
-		cache2[i] = 0;
-	}
-	
-	#pragma omp parallel firstprivate(cache1,cache2)
-	{
-		#pragma omp for nowait
-		for (int i = 0; i < N; i += n)
-		{
-			matmul_CpAtB(cache1, &v[i*n], &Av[i*n]);
-			matmul_CpAtB(cache2, &Av[i*n], &Av[i*n]);
-		}
-
-		#pragma omp critical 
-		for (long i = 0; i < size; i++)
-		{
-			vtAv[i] = ((u64) vtAv[i] + cache1[i]) % prime;
-			vtAAv[i] = ((u64) vtAAv[i] + cache2[i]) % prime;
-		}
-	}	
-}
-
-/* Compute the next values of v (in tmp) and p */
-void orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const u32 *vtAAv, u32 const * winv, int N, u32 const * Av)
-{
-	/* compute the n x n matrix c */
-	u32 c[n * n];
-	u32 spliced[n * n];
-
-	//to avoid compiler warnings (Wmaybe-uninitialized) when calling matmul_CpAB
-	for(int i = 0; i < n * n; i++)
-	{
-		c[i] = 0;
-		spliced[i] = 0;
-	}
-
-	for (int i = 0; i < n; i++)
-	{
-		for (int j = 0; j < n; j++)
-		{
-			spliced[i*n + j] = d[j] ? vtAAv[i * n + j] : vtAv[i * n + j];
-			c[i * n + j] = 0;
-		}
-	}
-		
-	matmul_CpAB(c, winv, spliced);
-
-	for (int i = 0; i < n; i++)
-	{
-		for (int j = 0; j < n; j++)
-		{
-			c[i * n + j] = prime - c[i * n + j];
-		}
-	}
-
-	u32 vtAvd[n * n];
-
-	for (int i = 0; i < n; i++)
-	{
-		for (int j = 0; j < n; j++)
-		{
-			vtAvd[i*n + j] = d[j] ? prime - vtAv[i * n + j] : 0;
-		}
-	}
-
-	#pragma omp parallel
-	{
-		/* compute the next value of v ; store it in tmp */
-		#pragma omp for         
-		for (long i = 0; i < N; i++)
-		{
-			for (long j = 0; j < n; j++)
-			{
-				tmp[i*n + j] = d[j] ? Av[i*n + j] : v[i * n + j];
-			}
-		}
-		
-		#pragma omp for 
-		for (long i = 0; i < N; i += n)
-		{
-			matmul_CpAB(&tmp[i*n], &v[i*n], c);
-		}
-
-		#pragma omp for
-		for (long i = 0; i < N; i += n)
-		{
-			matmul_CpAB(&tmp[i*n], &p[i*n], vtAvd);
-		}
-
-		/* compute the next value of p */
-		#pragma omp for
-		for (long i = 0; i < N; i++)
-		{
-			for (long j = 0; j < n; j++)
-			{
-				p[i * n + j] = d[j] ? 0 : p[i * n + j];
-			}
-		}
-		
-		#pragma omp for
-		for (long i = 0; i < N; i += n)
-		{
-			matmul_CpAB(&p[i*n], &v[i*n], winv);
-		}
-	}	
-}
-
 void verbosity()
 {
 	n_iterations += 1;
@@ -1857,15 +1692,18 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 	u32 *tmp = NULL;
 	u32 *Av = NULL;
 	u32 *p = NULL;
+	u32* sub_v = NULL; //sub block of the vector
+	u32* buffer = NULL; //buffer used by the root process to send sub block vectors
 
 	//malloc
 	v = malloc(sizeof(*v) * block_size_pad);
 	tmp = malloc(sizeof(*tmp) * block_size_pad);
 	Av = malloc(sizeof(*Av) * block_size_pad);
 	p = malloc(sizeof(*p) * block_size_pad);
+	sub_v = malloc(sizeof(*sub_v) * block_size);
 
 	//check malloc
-	if (v == NULL || tmp == NULL || Av == NULL || p == NULL)
+	if (v == NULL || tmp == NULL || Av == NULL || p == NULL || sub_v == NULL)
 	{
 		printf("impossible d'allouer les blocs de vecteur\n");
 		MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
@@ -1874,6 +1712,16 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 	//process 0 initiates the algorithm  	
 	if(myGridRank == 0)
 	{
+		//first malloc the buffer
+		buffer = malloc(sizeof(*buffer) * block_size);
+
+		//check
+		if(buffer == NULL)
+		{
+			printf("Can not malloc for the buffer used by the root process to send sub block vectors \n");
+			MPI_Abort(MPI_COMM_WORLD,MPI_ERR_NO_MEM);
+		}
+
 		//if checkpoint flag, load from snapshots from files
 		if(load_checkpoint)
 		{
@@ -1900,7 +1748,10 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 
                 #pragma omp for
                 for (long i = 0; i < block_size; i++)
-                    v[i] = random64() % prime;
+				{
+					v[i] = random64() % prime;
+					buffer[i] = 0;
+				}
             }
 		}
 
@@ -1927,42 +1778,24 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 	}
 	
 	bool stop = false;
-	u32* sub_v = NULL; //sub block of the vector
     double checkpoint_start = wtime(); 
 
 	while(true)
 	{
 		//only the process 0 handles the execution and when it stops
-		if(myGridRank == 0 && stop_after > 0 && n_iterations == stop_after)
-			stop = true;
+		if(myGridRank == 0 && stop_after > 0 && n_iterations == stop_after) stop = true;
 
 		//warn all the processes if we have finished
-		MPI_Bcast(&stop,1,MPI_INT,0,gridComm);
-    				
-		if (stop)
-			break;
+		MPI_Bcast(&stop,1,MPI_INT,0,gridComm);	
+		if (stop) break;
 
 		//parallel matrix-vector multiplication (u <- Mt * v)
-		mpi_create_vector_block(M,v,&sub_v,!transpose);
+		mpi_get_vector_block(M,v,sub_v,buffer,!transpose);
     	mpi_matrix_vector_product(tmp,m,sub_v,!transpose);
 
-		//free sub_v for the next multiplication
-		if(sub_v != NULL)
-		{
-			free(sub_v);
-			sub_v = NULL;
-		}
-
 		//parallel matrix-vector multiplication (v <- M * u)
-		mpi_create_vector_block(M,tmp,&sub_v,transpose);
+		mpi_get_vector_block(M,tmp,sub_v,buffer,transpose);
     	mpi_matrix_vector_product(Av,m,sub_v,transpose);
-
-		//free sub_v for the next iteration
-		if(sub_v != NULL)
-		{
-			free(sub_v);
-			sub_v = NULL;
-		}
 
 		//for n * n products
 		u32 vtAv[n * n];
@@ -1970,71 +1803,31 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 		u32 winv[n * n];
 		u32 d[n];
 
-		//do mpi block dot product
-		if(mpi_block_product)
-		{
-			//process 0 broadcasts Av and v before the n * n products
-			mpi_prepare_block_dot_products(Av,v,nrows);
+		//process 0 broadcasts Av and v before the n * n products
+		mpi_prepare_block_dot_products(Av,v,nrows);
 
-			//parallel block dot products
-			mpi_block_dot_products(vtAv,vtAAv,Av,v,nrows);
-		}
+		//parallel block dot products
+		mpi_block_dot_products(vtAv,vtAAv,Av,v,nrows);
+		
+		//process 0 broadcasts vtAv, vtAAv and portion of p before orthogonalization & semi_inversion
+		mpi_prepare_orthogonalize(vtAv,vtAAv,p,nrows);
 
-		//process 0 makes the n * n products
-		else if(myGridRank == 0)
-		{
-			block_dot_products(vtAv, vtAAv, nrows, Av, v);
-		}
+		//stop ?
+		stop = (semi_inverse(vtAv, winv, d) == 0);
 
-		//do mpi orthogonalization
-		if(mpi_ortho)
-		{
-			//process 0 broadcasts vtAv, vtAAv and portion of p before orthogonalization & semi_inversion
-			mpi_prepare_orthogonalize(vtAv,vtAAv,p,nrows);
+		//process 0 checks that everything is working ; disable in production
+		if(myGridRank == 0) correctness_tests(vtAv, vtAAv, winv, d);	
+		if(stop) break;
 
-			//stop ?
-			stop = (semi_inverse(vtAv, winv, d) == 0);
-
-			//process 0 checks that everything is working ; disable in production
-			if(myGridRank == 0)
-			{
-				correctness_tests(vtAv, vtAAv, winv, d);
-			}
-			
-			if(stop) break;
-
-			//parallel orthogonalization
-			mpi_orthogonalize(v,tmp,p,d,vtAv,vtAAv,winv,nrows,Av);
-		}
-
-		else
-		{
-			//process 0 checks that everything is working
-			if(myGridRank == 0)
-			{
-				stop = (semi_inverse(vtAv, winv, d) == 0);
-				correctness_tests(vtAv, vtAAv, winv, d);
-			}
-
-			//warn all the processes if we have finished
-			MPI_Bcast(&stop,1,MPI_INT,0,gridComm);
-			
-			if(stop) break;
-
-			//process 0 computes the orthogonalization
-			if(myGridRank == 0)
-			{
-				orthogonalize(v, tmp, p, d, vtAv, vtAAv, winv, nrows, Av);
-			}
-		}
+		//parallel orthogonalization
+		mpi_orthogonalize(v,tmp,p,d,vtAv,vtAAv,winv,nrows,Av);
 
 		//process 0 prepares the next iteration
 		if(myGridRank == 0)
 		{
 			/* the next value of v is in tmp ; copy */
 			#pragma omp parallel for
-			for (long i = 0; i < block_size; i++)
-				v[i] = tmp[i];
+			for (long i = 0; i < block_size; i++) v[i] = tmp[i];
 
 			verbosity();
 
@@ -2054,15 +1847,16 @@ u32 * block_lanczos(struct sparsematrix_t const * M, struct sparsematrix_t const
 	//process 0 prints out the execution time and result
 	if(myGridRank == 0)
 	{
+		free(buffer);
 		printf("\n");
-		if (stop_after < 0)
-			final_check(nrows, ncols, v, tmp);
+		if(stop_after < 0) final_check(nrows, ncols, v, tmp);
 		printf("  - Terminated in %.1fs after %d iterations\n", wtime() - start, n_iterations);
 	}
 
 	free(tmp);
 	free(Av);
 	free(p);
+	free(sub_v);
 	return v;
 }
 

@@ -177,7 +177,7 @@ void usage(char ** argv)
         printf("--left                      compute left kernel vectors [default]\n");
         printf("--stop-after N              stop the algorithm after N iterations\n");
         printf("--checkpoint cp             enable checkpointing every cp seconds [default cp = 60 s]\n");
-	    printf("--input-file                load vectors from checkpointing files\n");
+	    printf("--load-checkpoint           load vectors from checkpointing files\n");
         printf("\n");
         printf("The --matrix and --prime arguments are required\n");
         printf("The --stop-after and --output-file arguments mutually exclusive\n");
@@ -195,7 +195,7 @@ void process_command_line_options(int argc, char ** argv)
 		{"left", no_argument, NULL, 'l'},
 		{"stop-after", required_argument, NULL, 's'},
 		{"checkpoint", optional_argument, NULL, 'c'},
-		{"input-file", no_argument, NULL, 'i'},
+		{"load-checkpoint", no_argument, NULL, 'L'},
 		{NULL, 0, NULL, 0}
 	};
 	char ch;
@@ -234,7 +234,7 @@ void process_command_line_options(int argc, char ** argv)
 				if(optarg) checkpoint_timer = atoi(optarg);
 				break;
 
-		case 'i':
+		case 'L':
 				load_checkpoint = true;
 				break;
 		default:
