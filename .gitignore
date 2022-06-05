@@ -62,7 +62,6 @@ dkms.conf
 
 #python script file
 project_script/*
-*.ipynb
 
 #checkpoint files
 Av.txt
